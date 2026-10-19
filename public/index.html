@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>infinmcp 控制台</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="dot"></span> infinmcp <small id="version"></small></div>
+  <div class="topbar-right">
+    <span id="identity" class="badge">未登录</span>
+    <button id="btn-refresh" class="ghost" type="button">刷新</button>
+    <button id="btn-logout" class="ghost" type="button" hidden>清除 Key</button>
+  </div>
+</header>
+
+<main>
+  <nav id="tabs" class="tabs">
+    <button class="tab active" data-tab="guide" type="button">使用说明</button>
+    <button class="tab" data-tab="connections" type="button">连接</button>
+    <button class="tab" data-tab="logs" type="button">日志</button>
+  </nav>
+
+  <!-- ============ 未登录门禁（连接 / 日志 需要 Key） ============ -->
+  <section id="gate" class="card gate" hidden>
+    <h1>接入 infinmcp</h1>
+    <p class="muted">请输入管理员分配给你的 API Key。Key 只保存在本机浏览器（localStorage），不会上传到别处。</p>
+    <div class="row">
+      <input id="key-input" type="password" placeholder="API Key" autocomplete="off" />
+      <button id="key-save" class="primary" type="button">进入</button>
+    </div>
+    <p id="gate-error" class="error" hidden></p>
+    <p class="muted small">还没有 Key？看「使用说明」里的「第一步」。</p>
+  </section>
+
+  <!-- ============ 使用说明 ============ -->
+  <section id="panel-guide" class="panel">
+    <div class="card guide">
+      <p class="muted small">本页无需登录即可阅读。</p>
+
+      <h2>这是什么</h2>
+      <p>infinmcp 是一个<strong>只读</strong>数据库 MCP 服务，把 <strong>MySQL / Doris / Redis / MongoDB</strong> 的能力通过
+      <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer">MCP</a> 暴露给 AI 客户端。
+      所有写操作（增删改、DDL、<code>FLUSHALL</code>、<code>$out</code> 等）都会被服务端拒绝，可以放心接入测试环境。</p>
+      <div class="note">
+        <strong>只读是硬限制：</strong>不是提示词约束，而是服务端的语法/命令白名单校验。写语句根本到不了数据库。
+      </div>
+
+      <h2>第一步：拿到 API Key</h2>
+      <ul>
+        <li>API Key 由管理员在配置文件 <code>server.apiKeys</code> 中分配，每人一个，并带角色：<code>admin</code> 或 <code>user</code>。</li>
+        <li><code>user</code>：可以查询、可以看调用日志，<strong>不能</strong>改连接配置。</li>
+        <li><code>admin</code>：额外可以在「连接」页新增 / 编辑 / 删除连接，并测试连通性。</li>
+        <li>拿到 Key 后，在「连接」页填入即可（会记在本机，下次免填）。</li>
+      </ul>
+
+      <h2>第二步：把 MCP 客户端接进来</h2>
+
+      <div class="note">
+        <strong>下面示例里的占位符都要替换成实际值：</strong>
+        <ul style="margin:6px 0 0">
+          <li><code>&lt;测试机地址&gt;</code> → 服务地址，如 <code>127.0.0.1</code>（本机）或 <code>172.31.236.167</code>（局域网）。<strong>尖括号不是合法主机名</strong>，原样保留会报 <code>ENOTFOUND</code>。</li>
+          <li><code>8787</code> 是默认端口，起服务时改过就跟着改。</li>
+          <li><code>/mcp</code> 是<strong>固定路径</strong>，别丢、别改名。</li>
+          <li><code>&lt;你的 API Key&gt;</code> → 实际 Key。</li>
+          <li><code>{env:INFINMCP_API_KEY}</code>（Claude Code 里是 <code>${INFINMCP_API_KEY}</code>）两种写法都行：<strong>保留</strong>并设置同名环境变量，或者<strong>直接填明文 Key</strong>。</li>
+        </ul>
+      </div>
+
+      <h3>先看：改的是哪个文件</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>客户端</th><th>命令</th><th>写入的文件</th><th>生效范围</th></tr></thead>
+          <tbody>
+            <tr><td>Claude Code</td><td class="mono">claude mcp add … --scope user</td><td class="mono">~/.claude.json（顶层 mcpServers）</td><td>所有项目</td></tr>
+            <tr><td>Claude Code</td><td class="mono">… --scope local（默认）</td><td class="mono">~/.claude.json → projects["&lt;目录&gt;"].mcpServers</td><td>仅该目录</td></tr>
+            <tr><td>Claude Code</td><td class="mono">… --scope project</td><td class="mono">&lt;项目&gt;/.mcp.json</td><td>该项目（可提交）</td></tr>
+            <tr><td>OpenCode V2</td><td class="mono">opencode mcp add … --global</td><td class="mono">~/.config/opencode/opencode.json</td><td>所有项目</td></tr>
+            <tr><td>OpenCode V2</td><td class="mono">opencode mcp add …</td><td class="mono">&lt;项目&gt;/opencode.json</td><td>该项目</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        <strong>注意：</strong><code>project</code> / 项目级作用域会把 <strong>API Key 明文写进项目文件</strong>。
+        项目要进 git 就改用 <code>user</code> / <code>--global</code>，或用环境变量占位（<code>${VAR}</code> / <code>{env:VAR}</code>）。
+      </div>
+
+      <h3>OpenCode（远程 HTTP）</h3>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>{
+  "mcp": {
+    "servers": {
+      "infinmcp": {
+        "type": "remote",
+        "url": "http://&lt;测试机地址&gt;:8787/mcp",
+        "oauth": false,
+        "headers": { "Authorization": "Bearer {env:INFINMCP_API_KEY}" }
+      }
+    }
+  }
+}</code></pre></div>
+      <p class="small muted">把 <code>INFINMCP_API_KEY</code> 放到环境变量里，避免把 Key 写进配置文件。</p>
+      <p class="small muted">或者用命令行（<strong>推荐</strong>，自动写对文件和结构）：</p>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>opencode mcp add infinmcp --global \
+  --url http://&lt;测试机地址&gt;:8787/mcp \
+  --header "Authorization=Bearer &lt;你的 API Key&gt;"</code></pre></div>
+      <div class="note">
+        <strong>两个坑：</strong>
+        ① OpenCode V2 的 MCP 配置在 <code>mcp.servers.&lt;名字&gt;</code> 下（V1 是直接 <code>mcp.&lt;名字&gt;</code>，写成 V1 那样不生效）；
+        ② <code>opencode mcp add</code> <strong>不会</strong>自动加 <code>oauth: false</code>，而远程服务器默认走 OAuth ——
+        不补上，Key 一旦失效就会报出和 Claude Code 同款的 DCR 错，所以加完手动补一句 <code>"oauth": false</code>。
+      </div>
+      <p class="small muted">
+        验证：<code>opencode mcp list</code> 看到 <code>✓ infinmcp connected</code>，或会话里 <code>/mcps</code> 查看。
+        注意 <code>mcp list</code> 是<strong>按当前目录的项目上下文</strong>报告的，要在你实际使用 OpenCode 的目录下执行。
+        全局配置在 <code>~/.config/opencode/opencode.json</code>（<code>--global</code> 写的就是它），
+        不加 <code>--global</code> 则写当前项目的 <code>opencode.json</code>。
+        移除：删掉配置里那个条目（没有 <code>remove</code> 子命令）。
+      </p>
+
+      <h3>Claude Code</h3>
+      <p class="small muted">命令行一条搞定（下面用 <code>user</code> scope，所有项目都能用）：</p>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>claude mcp add --transport http infinmcp \
+  http://&lt;测试机地址&gt;:8787/mcp \
+  --header "Authorization: Bearer &lt;你的 API Key&gt;" \
+  --scope user</code></pre></div>
+      <p class="small muted">
+        加 <code>--scope user</code> 自己所有项目都能用（<strong>推荐</strong>，Key 也不会落到仓库里）；
+        <code>--scope project</code> 写进项目根目录的 <code>.mcp.json</code>，适合团队共享但注意 Key 会进版本库；
+        不加则是默认的 <code>local</code>，只对当前目录生效。
+      </p>
+      <p class="small muted">
+        <strong>加完要新开一个会话才生效</strong>（MCP server 在会话启动时加载）。工具名会带前缀：
+        <code>mcp__infinmcp__mysql_query</code>、<code>mcp__infinmcp__mysql_schema</code> …；
+        移除用 <code>claude mcp remove infinmcp --scope user</code>。
+      </p>
+
+      <p class="small muted">或者手写项目根目录的 <code>.mcp.json</code>：</p>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>{
+  "mcpServers": {
+    "infinmcp": {
+      "type": "http",
+      "url": "http://&lt;测试机地址&gt;:8787/mcp",
+      "headers": { "Authorization": "Bearer ${INFINMCP_API_KEY}" }
+    }
+  }
+}</code></pre></div>
+      <div class="note">
+        <strong>两个坑：</strong>
+        ① <code>type</code> <strong>必须写</strong> <code>"http"</code>——只给 <code>url</code> 不给 <code>type</code> 时，Claude Code 会当成 stdio 服务直接跳过；
+        ② <code>${VAR}</code> 由 Claude Code 自己展开，不用手动替换。
+      </div>
+      <p class="small muted">
+        验证是否接上：<code>claude mcp list</code> 看到 <code>✔ Connected</code>，或在会话里输入 <code>/mcp</code>。
+        项目级配置首次使用会让你确认一次（安全提示），同意即可。
+      </p>
+
+      <h3>其它支持远程 MCP 的客户端（通用 JSON）</h3>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>{
+  "mcpServers": {
+    "infinmcp": {
+      "url": "http://&lt;测试机地址&gt;:8787/mcp",
+      "headers": { "Authorization": "Bearer &lt;你的 API Key&gt;" }
+    }
+  }
+}</code></pre></div>
+      <p class="small muted">不同客户端的字段名略有差异（有的用 <code>transport</code> / <code>type</code>），以客户端文档为准。</p>
+
+      <h3>本机 stdio 方式（不用 HTTP，仅自己用）</h3>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>{
+  "mcpServers": {
+    "infinmcp": {
+      "command": "node",
+      "args": ["/path/to/infinmcp/dist/index.js", "mcp", "-c", "/path/to/infinmcp.config.json"]
+    }
+  }
+}</code></pre></div>
+      <p class="small muted">stdio 模式不校验 API Key，调用者记为 <code>local</code>；适合本机调试，不适合多人共用。</p>
+
+      <div class="note">
+        完整版接入说明（含各类客户端的字段差异、环境变量语法对照、排错对照表）：
+        服务端仓库的 <code>docs/clients.md</code>。
+      </div>
+
+      <h2>第三步：开始提问</h2>
+      <p>接好之后，直接用自然语言问，客户端会自己选工具。例如：</p>
+      <ul>
+        <li>「列出所有可用连接」</li>
+        <li>「<code>main</code> 库里 users 表有哪些字段？」</li>
+        <li>「查一下 <code>main</code> 库最近注册的 10 个用户」</li>
+        <li>「<code>cache</code> 里 <code>user:*</code> 有哪些 key？」</li>
+        <li>「<code>docs</code> 里 orders 集合按状态统计条数」</li>
+      </ul>
+
+      <h2>可用工具</h2>
+      <p>连接名用 <code>list_connections</code> 查（本页「连接」页也能看到）。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>工具</th><th>用途</th><th>主要参数</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">list_connections</td><td>列出可用连接（口令掩码）</td><td>—</td></tr>
+            <tr><td class="mono">mysql_query</td><td>只读 SQL 查询</td><td><code>connection</code>, <code>sql</code>, <code>params?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">mysql_schema</td><td>查库 / 表 / 列 / 索引</td><td><code>connection</code>, <code>database?</code>, <code>table?</code></td></tr>
+            <tr><td class="mono">doris_query</td><td>Doris 只读 SQL 查询</td><td><code>connection</code>, <code>sql</code>, <code>params?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">doris_schema</td><td>Doris 查库 / 表 / 列 / 索引</td><td><code>connection</code>, <code>database?</code>, <code>table?</code></td></tr>
+            <tr><td class="mono">redis_exec</td><td>执行单条只读命令</td><td><code>connection</code>, <code>command</code>, <code>args?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">redis_scan</td><td>SCAN 增量扫 key（不阻塞）</td><td><code>connection</code>, <code>pattern?</code>, <code>cursor?</code>, <code>type?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">mongo_find</td><td>查询文档</td><td><code>connection</code>, <code>collection</code>, <code>database?</code>, <code>filter?</code>, <code>projection?</code>, <code>sort?</code>, <code>skip?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">mongo_aggregate</td><td>只读聚合管道</td><td><code>connection</code>, <code>collection</code>, <code>pipeline</code>, <code>database?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">mongo_list_collections</td><td>列集合；无默认库时列数据库</td><td><code>connection</code>, <code>database?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">mongo_schema</td><td>采样推断字段与类型</td><td><code>connection</code>, <code>collection</code>, <code>database?</code>, <code>sample?</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>调用示例</h3>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>// MySQL：按 id 取一行（用参数占位，别拼字符串）
+mysql_query
+{
+  "connection": "main",
+  "sql": "SELECT id, name, created_at FROM users WHERE id = ?",
+  "params": [1024]
+}
+
+// Doris：同样是 MySQL 协议，按时间聚合
+doris_query
+{
+  "connection": "warehouse",
+  "sql": "SELECT city, count(*) AS n FROM orders WHERE dt >= ? GROUP BY city ORDER BY n DESC",
+  "params": ["2024-01-01"]
+}
+
+// Redis：读一个 hash
+redis_exec
+{ "connection": "cache", "command": "HGETALL", "args": ["user:1024"] }
+
+// Redis：扫 key（cursor 为 "0" 表示扫完）
+redis_scan
+{ "connection": "cache", "pattern": "user:*", "count": 100 }
+
+// MongoDB：查最近 5 条订单
+mongo_find
+{
+  "connection": "docs",
+  "collection": "orders",
+  "filter": { "status": "paid" },
+  "sort": { "createdAt": -1 },
+  "limit": 5
+}
+
+// MongoDB：按状态分组统计
+mongo_aggregate
+{
+  "connection": "docs",
+  "collection": "orders",
+  "pipeline": [
+    { "$group": { "_id": "$status", "n": { "$sum": 1 } } },
+    { "$sort": { "n": -1 } }
+  ]
+}</code></pre></div>
+
+      <h2>只读边界：这些会被拒绝</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>数据库</th><th>会被拒绝</th><th>替代做法</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>MySQL</td>
+              <td>多语句、<code>INSERT / UPDATE / DELETE / DROP / ALTER</code>、<code>INTO OUTFILE</code>、<code>FOR UPDATE</code>、<code>EXPLAIN ANALYZE</code></td>
+              <td>只发单条 <code>SELECT / SHOW / EXPLAIN / DESC / WITH</code></td>
+            </tr>
+            <tr>
+              <td>Doris</td>
+              <td>同 MySQL：多语句、<code>INSERT / UPDATE / DELETE / DROP / ALTER</code>、<code>INTO OUTFILE</code>、<code>EXPLAIN ANALYZE</code></td>
+              <td>只发单条 <code>SELECT / SHOW / EXPLAIN / DESC / WITH</code></td>
+            </tr>
+            <tr>
+              <td>Redis</td>
+              <td>写命令（<code>SET / DEL / INCR / EXPIRE / FLUSHALL</code>…）、<code>CONFIG / CLIENT / DEBUG / EVAL / SCRIPT</code>、阻塞与订阅类（<code>BLPOP / SUBSCRIBE / XREAD / MONITOR</code>）、<code>KEYS</code></td>
+              <td>用 <code>redis_scan</code> 代替 <code>KEYS</code></td>
+            </tr>
+            <tr>
+              <td>MongoDB</td>
+              <td>聚合写入阶段 <code>$out / $merge</code>（含嵌套），服务端脚本 <code>$where / $function / $accumulator</code></td>
+              <td>把结果取回来自己在本地处理</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small muted">返回值有行数上限（配置里的 <code>limits.maxRows</code>，当前值见「连接」页顶部），
+      超出的部分会被截断并标注「已截断」。单次查询还有超时限制 <code>limits.timeoutMs</code>。</p>
+
+      <h2>连接配置（管理员）</h2>
+      <ul>
+        <li>只有 <code>admin</code> 能在「连接」页新增 / 编辑 / 删除连接，并点「测试」验证连通性。</li>
+        <li>保存后<strong>立即生效</strong>，不用重启服务，MCP 客户端下一次调用就能用上新连接。</li>
+        <li>编辑已有连接时，<strong>口令 / URI 留空表示沿用旧值</strong>，不用重新输入密钥。</li>
+        <li>连接配置保存在服务端数据目录的 <code>connections.json</code>（权限 <code>0600</code>）。</li>
+        <li>也可以写在服务端配置文件的 <code>connections</code> 里（那种方式改完<strong>要重启</strong>）；
+            同名时以 <code>connections.json</code> 为准。</li>
+      </ul>
+
+      <h3>每种数据库要填什么</h3>
+
+      <p class="small"><strong>MySQL</strong>（<code>type: "mysql"</code>）</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>必填</th><th>默认</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">host</td><td>✅</td><td>—</td><td>主机名或 IP</td></tr>
+            <tr><td class="mono">port</td><td></td><td>3306</td><td></td></tr>
+            <tr><td class="mono">user</td><td>✅</td><td>—</td><td>建议用只读账号</td></tr>
+            <tr><td class="mono">password</td><td></td><td>空</td><td></td></tr>
+            <tr><td class="mono">database</td><td></td><td>空</td><td>默认库；填了才能用不带库名的表名，查表结构也靠它</td></tr>
+            <tr><td class="mono">charset</td><td></td><td>驱动默认</td><td>建议 <code>utf8mb4</code>，否则中文可能乱码</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small"><strong>Doris</strong>（<code>type: "doris"</code>）— 与 MySQL 协议兼容，字段同 MySQL，默认端口 <code>9030</code></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>必填</th><th>默认</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">host</td><td>✅</td><td>—</td><td>Doris FE 的主机名或 IP</td></tr>
+            <tr><td class="mono">port</td><td></td><td>9030</td><td>FE 的 MySQL 协议端口（不是 HTTP <code>8030</code>）</td></tr>
+            <tr><td class="mono">user</td><td>✅</td><td>—</td><td>建议用只读账号</td></tr>
+            <tr><td class="mono">password</td><td></td><td>空</td><td></td></tr>
+            <tr><td class="mono">database</td><td></td><td>空</td><td>默认库；填了才能用不带库名的表名，查表结构也靠它</td></tr>
+            <tr><td class="mono">charset</td><td></td><td>驱动默认</td><td>建议 <code>utf8mb4</code>，否则中文可能乱码</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small"><strong>Redis</strong>（<code>type: "redis"</code>）</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>必填</th><th>默认</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">host</td><td>✅</td><td>—</td><td></td></tr>
+            <tr><td class="mono">port</td><td></td><td>6379</td><td></td></tr>
+            <tr><td class="mono">username</td><td></td><td>空</td><td>Redis 6+ ACL 用户名；不用 ACL 就留空</td></tr>
+            <tr><td class="mono">password</td><td></td><td>空</td><td></td></tr>
+            <tr><td class="mono">db</td><td></td><td>0</td><td>逻辑库编号</td></tr>
+            <tr><td class="mono">tls</td><td></td><td>否</td><td>云 Redis / 要求 TLS 时打开</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small"><strong>MongoDB</strong>（<code>type: "mongodb"</code>）</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">uri</td><td>✅</td><td>完整连接串，<strong>账号口令就写在这里</strong>，例如
+              <code>mongodb://readonly:pw@host:27017/app?authSource=admin</code>；
+              口令含特殊字符要 URL 编码</td></tr>
+            <tr><td class="mono">database</td><td></td><td>默认库；不填则每次调用都要在参数里给 <code>database</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        字段的详细说明、只读账号怎么建、常见坑，见服务端仓库里的 <code>docs/connections.md</code>。
+      </div>
+
+      <h3>口令建议用环境变量</h3>
+      <p class="small">配置文件的字符串值整体等于 <code>{env:VAR}</code> 时会替换成环境变量，缺失则<strong>启动即报错</strong>（不会静默用空口令）：</p>
+      <div class="code"><button class="copy" type="button">复制</button><pre><code>{ "password": "{env:MYSQL_PW}" }   // ✅ 会替换
+{ "password": "pw-{env:X}" }       // ❌ 不是这个语法，按字面量处理</code></pre></div>
+
+      <h3>全局限制（所有连接共用）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>配置</th><th>默认</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">limits.maxRows</td><td>200</td><td>单次返回的最大行数 / 文档数，超出会标注「已截断」</td></tr>
+            <tr><td class="mono">limits.timeoutMs</td><td>10000</td><td>既作查询超时，也作连接超时</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>常见问题</h2>
+      <details><summary>提示 401 unauthorized</summary>
+        <p>API Key 缺失或不正确。确认请求头是 <code>Authorization: Bearer &lt;key&gt;</code>（或 <code>X-API-Key: &lt;key&gt;</code>），
+        且 Key 没有多余空格。Key 区分大小写。</p>
+      </details>
+      <details><summary>提示 403 需要 admin 权限</summary>
+        <p>当前 Key 是 <code>user</code> 角色，不能改连接配置。查询与看日志不受影响；需要改配置请找管理员。</p>
+      </details>
+      <details><summary>提示「无法连接 MySQL / Doris / Redis / MongoDB」</summary>
+        <p>服务端到数据库的网络或口令有问题。管理员可在「连接」页点「测试」看具体报错（例如 <code>ECONNREFUSED</code> 表示端口不通）。</p>
+      </details>
+      <details><summary>结果被截断 / 只返回了一部分</summary>
+        <p>命中服务端行数上限 <code>limits.maxRows</code>。请缩小查询范围（加 <code>WHERE</code>、<code>limit</code>、时间过滤），或让管理员调高上限。</p>
+      </details>
+      <details><summary>谁调用过、调了什么？</summary>
+        <p>看「日志」页：每条记录都有调用者（user）、工具、目标连接、耗时、行数、成功/失败，并支持按条件筛选与实时刷新。</p>
+      </details>
+      <details><summary>Key 会存在哪里？</summary>
+        <p>只存在你本机浏览器的 localStorage，前端不会把它发给除本服务以外的任何地方。点右上角「清除 Key」可随时移除。</p>
+      </details>
+      <details><summary>怎么新增一个数据库连接？</summary>
+        <p>找 <code>admin</code> 在「连接」页点「新增连接」，按上面「每种数据库要填什么」填好即可，<strong>保存即生效</strong>，不用重启。
+        <code>user</code> 角色看不到这些按钮，属于权限设计。</p>
+      </details>
+      <details><summary>Claude Code 里显示 Failed to connect</summary>
+        <p>按顺序查：① <code>url</code> 是否带了结尾的 <code>/mcp</code>；② <code>type</code> 是否写了 <code>"http"</code>（漏了会被当成 stdio 跳过）；
+        ③ Key 是否正确、有没有多余空格；④ 在你机器上 <code>curl http://&lt;测试机&gt;:8787/healthz</code> 通不通。
+        详细报错看 <code>claude mcp get infinmcp</code> 的 <code>Issue:</code> 行，或会话里的 <code>/mcp</code>。</p>
+      </details>
+      <details><summary>报 Dynamic Client Registration rejected (HTTP 404 / 405)</summary>
+        <p>这是<strong>配置里漏了 Authorization 头</strong>的典型症状，不是服务端故障。客户端拿到 <code>401</code> 后误以为要 OAuth，
+        去探 <code>/register</code> 做动态客户端注册，于是报出这个跟数据库八竿子打不着的错。</p>
+        <p>修法：确认 MCP 配置里带了请求头 —— Claude Code 用
+        <code>claude mcp add … --header "Authorization: Bearer &lt;API Key&gt;"</code>；
+        手写配置就补上 <code>"headers": { "Authorization": "Bearer &lt;API Key&gt;" }</code>，然后重新连接。</p>
+        <p class="small muted">服务端对这类探测会返回 <code>oauth_not_supported</code> 并说明该配什么，但根治还是把 Key 配上。</p>
+      </details>
+      <details><summary>能不能通过这个服务写数据？</summary>
+        <p>不能，这是设计目标。所有写操作在服务端被语法 / 命令白名单拦下，<strong>请求根本不会发到数据库</strong>。见上面「只读边界」。</p>
+      </details>
+    </div>
+  </section>
+
+  <!-- ============ 连接 ============ -->
+  <section id="panel-connections" class="panel" hidden>
+    <div class="card">
+      <div class="panel-head">
+        <h2>连接</h2>
+        <div class="row">
+          <span id="limits" class="muted small"></span>
+          <button id="btn-new-conn" class="primary" type="button" hidden>新增连接</button>
+        </div>
+      </div>
+      <p id="conn-readonly" class="muted small" hidden>你当前是 user 角色，只能查看连接列表；新增 / 编辑 / 删除需要管理员操作。</p>
+      <div id="conn-list" class="table-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ============ 日志 ============ -->
+  <section id="panel-logs" class="panel" hidden>
+    <div class="card">
+      <div class="panel-head">
+        <h2>调用日志</h2>
+        <div class="row">
+          <label class="small row"><input type="checkbox" id="live" checked /> 实时</label>
+          <span id="stream-state" class="muted small"></span>
+          <button id="btn-clear-logs" class="ghost" type="button" style="border-color:var(--border);color:var(--text);background:#fff">清空</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <input id="f-user" placeholder="按用户筛选" />
+        <select id="f-tool"><option value="">全部工具</option></select>
+        <select id="f-conn"><option value="">全部连接</option></select>
+        <select id="f-status">
+          <option value="">全部状态</option>
+          <option value="ok">成功</option>
+          <option value="error">失败</option>
+        </select>
+      </div>
+      <div id="log-list" class="table-wrap"></div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ 连接编辑弹窗 ============ -->
+<dialog id="conn-dialog">
+  <form id="conn-form">
+    <h3 id="conn-dialog-title">新增连接</h3>
+    <div class="field">
+      <label for="cf-name">连接名</label>
+      <input id="cf-name" required pattern="[A-Za-z0-9_.\-]{1,64}" placeholder="例如 main" />
+      <span class="hint">字母 / 数字 / 下划线 / 点 / 连字符，最长 64</span>
+    </div>
+    <div class="field">
+      <label for="cf-type">类型</label>
+      <select id="cf-type">
+        <option value="mysql">MySQL</option>
+        <option value="doris">Doris</option>
+        <option value="redis">Redis</option>
+        <option value="mongodb">MongoDB</option>
+      </select>
+    </div>
+
+    <div data-group="mysql" hidden>
+      <div class="grid2">
+        <div class="field"><label for="cf-mysql-host">主机</label><input id="cf-mysql-host" placeholder="10.0.0.11" /></div>
+        <div class="field"><label for="cf-mysql-port">端口</label><input id="cf-mysql-port" type="number" placeholder="3306" /></div>
+      </div>
+      <div class="field"><label for="cf-mysql-user">用户名</label><input id="cf-mysql-user" placeholder="readonly" /></div>
+      <div class="field">
+        <label for="cf-mysql-password">口令</label>
+        <input id="cf-mysql-password" type="password" autocomplete="new-password" />
+        <span class="hint" data-hint="keep">留空表示沿用旧口令</span>
+      </div>
+      <div class="grid2">
+        <div class="field"><label for="cf-mysql-db">默认库</label><input id="cf-mysql-db" placeholder="app" /></div>
+        <div class="field"><label for="cf-mysql-charset">字符集</label><input id="cf-mysql-charset" placeholder="utf8mb4" /></div>
+      </div>
+    </div>
+
+    <div data-group="doris" hidden>
+      <div class="grid2">
+        <div class="field"><label for="cf-doris-host">主机</label><input id="cf-doris-host" placeholder="10.0.0.14" /></div>
+        <div class="field"><label for="cf-doris-port">端口</label><input id="cf-doris-port" type="number" placeholder="9030" /></div>
+      </div>
+      <div class="field"><label for="cf-doris-user">用户名</label><input id="cf-doris-user" placeholder="readonly" /></div>
+      <div class="field">
+        <label for="cf-doris-password">口令</label>
+        <input id="cf-doris-password" type="password" autocomplete="new-password" />
+        <span class="hint" data-hint="keep">留空表示沿用旧口令</span>
+      </div>
+      <div class="grid2">
+        <div class="field"><label for="cf-doris-db">默认库</label><input id="cf-doris-db" placeholder="app" /></div>
+        <div class="field"><label for="cf-doris-charset">字符集</label><input id="cf-doris-charset" placeholder="utf8mb4" /></div>
+      </div>
+    </div>
+
+    <div data-group="redis" hidden>
+      <div class="grid2">
+        <div class="field"><label for="cf-redis-host">主机</label><input id="cf-redis-host" placeholder="10.0.0.12" /></div>
+        <div class="field"><label for="cf-redis-port">端口</label><input id="cf-redis-port" type="number" placeholder="6379" /></div>
+      </div>
+      <div class="field"><label for="cf-redis-username">用户名（可选）</label><input id="cf-redis-username" placeholder="default" /></div>
+      <div class="field">
+        <label for="cf-redis-password">口令（可选）</label>
+        <input id="cf-redis-password" type="password" autocomplete="new-password" />
+        <span class="hint" data-hint="keep">留空表示沿用旧口令</span>
+      </div>
+      <div class="grid2">
+        <div class="field"><label for="cf-redis-db">db 编号</label><input id="cf-redis-db" type="number" min="0" placeholder="0" /></div>
+        <div class="field"><label for="cf-redis-tls">TLS</label><select id="cf-redis-tls"><option value="">否</option><option value="true">是</option></select></div>
+      </div>
+    </div>
+
+    <div data-group="mongodb" hidden>
+      <div class="field">
+        <label for="cf-mongo-uri">URI</label>
+        <input id="cf-mongo-uri" placeholder="mongodb://user:pass@10.0.0.13:27017/app" />
+        <span class="hint" data-hint="keep">留空表示沿用旧 URI（口令在 URI 里）</span>
+      </div>
+      <div class="field"><label for="cf-mongo-db">默认库（可选）</label><input id="cf-mongo-db" placeholder="app" /></div>
+    </div>
+
+    <footer>
+      <button type="button" id="conn-cancel">取消</button>
+      <button type="submit" class="primary">保存</button>
+    </footer>
+    <p id="conn-error" class="error small" hidden></p>
+  </form>
+</dialog>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>

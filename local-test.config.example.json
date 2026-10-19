@@ -1,0 +1,38 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "apiKeys": [
+      { "name": "local-admin", "key": "local-admin-key", "role": "admin" },
+      { "name": "local-user", "key": "local-user-key", "role": "user" }
+    ]
+  },
+  "connections": {
+    "main": {
+      "type": "mysql",
+      "host": "127.0.0.1",
+      "port": 3306,
+      "user": "readonly",
+      "password": "fake-password",
+      "database": "app"
+    },
+    "cache": {
+      "type": "redis",
+      "host": "127.0.0.1",
+      "port": 6379,
+      "db": 0
+    },
+    "docs": {
+      "type": "mongodb",
+      "uri": "mongodb://127.0.0.1:27017/app",
+      "database": "app"
+    }
+  },
+  "limits": {
+    "maxRows": 200,
+    "timeoutMs": 3000
+  },
+  "logs": {
+    "file": "~/.config/infinmcp-local/logs.jsonl"
+  }
+}

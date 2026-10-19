@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+data/
+*.tsbuildinfo
+
+# 本地自测配置（含明文口令，不要提交）
+local-test.config.json

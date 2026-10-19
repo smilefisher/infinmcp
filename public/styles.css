@@ -1,0 +1,184 @@
+:root {
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --border: #e2e8f0;
+  --text: #1f2933;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-soft: #eff4ff;
+  --ok: #15803d;
+  --ok-soft: #ecfdf3;
+  --err: #b42318;
+  --err-soft: #fef3f2;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+code, pre, .mono { font-family: var(--mono); font-size: 13px; }
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  background: #0f172a;
+  color: #e5e7eb;
+  flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: .2px; }
+.brand .dot { width: 9px; height: 9px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.2); }
+.brand small { color: #94a3b8; font-weight: 400; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+
+.badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(255,255,255,.12);
+  color: #e5e7eb;
+}
+.badge.role-admin { background: #1d4ed8; }
+.badge.role-user { background: #0f766e; }
+
+/* ---------- 布局 ---------- */
+main { max-width: 1180px; margin: 0 auto; padding: 20px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tab {
+  border: none;
+  background: none;
+  padding: 10px 16px;
+  font-size: 14px;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+}
+.tab:hover { background: #eef2f7; color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.panel-head h2 { margin: 0; font-size: 17px; }
+
+/* ---------- 控件 ---------- */
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  padding: 7px 13px;
+  color: var(--text);
+}
+button:hover { background: #f1f5f9; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #1d4ed8; }
+button.ghost { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.18); color: #e5e7eb; }
+button.ghost:hover { background: rgba(255,255,255,.18); }
+button.danger { color: var(--err); border-color: #fecdca; }
+button.danger:hover { background: var(--err-soft); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+input, select {
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  min-width: 0;
+}
+input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.error { color: var(--err); }
+.ok { color: var(--ok); }
+
+/* ---------- 门禁 ---------- */
+.gate { max-width: 520px; margin: 6vh auto; text-align: left; }
+.gate h1 { margin: 0 0 8px; font-size: 22px; }
+.gate .row { margin: 16px 0 10px; }
+.gate input { flex: 1 1 240px; }
+
+/* ---------- 表格 ---------- */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { background: #f8fafc; font-weight: 600; color: var(--muted); white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+td.nowrap { white-space: nowrap; }
+td .sub { color: var(--muted); font-size: 12.5px; }
+
+.pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--accent-soft); color: var(--accent); }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.err { background: var(--err-soft); color: var(--err); }
+
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+
+/* ---------- 弹窗表单 ---------- */
+dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0;
+  width: min(520px, 92vw);
+  background: var(--panel);
+  color: var(--text);
+}
+dialog::backdrop { background: rgba(15,23,42,.45); }
+dialog form { padding: 20px; }
+dialog h3 { margin: 0 0 14px; font-size: 17px; }
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+.field label { font-size: 13px; color: var(--muted); }
+.field .hint { font-size: 12px; color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
+/* ---------- 使用说明 ---------- */
+.guide h2 { font-size: 17px; margin: 26px 0 8px; }
+.guide h2:first-child { margin-top: 0; }
+.guide h3 { font-size: 14.5px; margin: 18px 0 6px; }
+.guide p, .guide li { font-size: 14px; }
+.guide ol, .guide ul { padding-left: 22px; margin: 8px 0; }
+.guide .code { position: relative; margin: 10px 0; }
+.guide pre {
+  margin: 0;
+  padding: 12px 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  overflow-x: auto;
+  line-height: 1.55;
+}
+.guide .copy { position: absolute; top: 8px; right: 8px; padding: 3px 9px; font-size: 12px; background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.2); color: #e2e8f0; }
+.guide .copy:hover { background: rgba(255,255,255,.24); }
+.guide code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+.guide pre code { background: none; padding: 0; }
+.guide table { font-size: 13.5px; }
+.guide .note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+.guide details { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 8px 0; background: #fff; }
+.guide summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+
+@media (max-width: 640px) {
+  .grid2 { grid-template-columns: 1fr; }
+  main { padding: 14px; }
+}

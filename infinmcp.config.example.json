@@ -1,0 +1,46 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8787,
+    "apiKeys": [
+      { "name": "chenning", "key": "{env:KEY_CHENNING}", "role": "admin" },
+      { "name": "alice", "key": "{env:KEY_ALICE}", "role": "user" }
+    ]
+  },
+  "connections": {
+    "main": {
+      "type": "mysql",
+      "host": "10.0.0.11",
+      "port": 3306,
+      "user": "readonly",
+      "password": "{env:MYSQL_PW}",
+      "database": "app"
+    },
+    "warehouse": {
+      "type": "doris",
+      "host": "10.0.0.14",
+      "port": 9030,
+      "user": "readonly",
+      "password": "{env:DORIS_PW}",
+      "database": "app"
+    },
+    "cache": {
+      "type": "redis",
+      "host": "10.0.0.12",
+      "port": 6379,
+      "db": 0
+    },
+    "docs": {
+      "type": "mongodb",
+      "uri": "{env:MONGO_URI}",
+      "database": "app"
+    }
+  },
+  "limits": {
+    "maxRows": 200,
+    "timeoutMs": 10000
+  },
+  "logs": {
+    "file": "~/.infinmcp/logs.jsonl"
+  }
+}
