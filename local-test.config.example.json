@@ -30,7 +30,12 @@
   },
   "limits": {
     "maxRows": 200,
-    "timeoutMs": 3000
+    "timeoutMs": 3000,
+    "maxCellWidth": 512,
+    "inlineMaxBytes": 262144,
+    "inlineMaxRows": 1000,
+    "exportTtlHours": 24,
+    "exportMaxFiles": 200
   },
   "logs": {
     "file": "~/.config/infinmcp-local/logs.jsonl"

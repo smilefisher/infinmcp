@@ -35,12 +35,23 @@ describe("stdio MCP server", () => {
       await client.connect(transport);
 
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toContain("list_connections");
+      const names = tools.tools.map((tool) => tool.name);
+      expect(names).toContain("list_connections");
+      expect(names).toContain("create_connection");
 
       const result = await client.callTool({ name: "list_connections", arguments: {} });
       const content = result.content as Array<{ type: string; text: string }>;
       expect(content[0]?.text).toContain("main");
       expect(content[0]?.text).toContain("mysql");
+
+      // stdio 模式不注入连接管理能力：写工具可见但会明确报错（只读）
+      const writeAttempt = await client.callTool({
+        name: "create_connection",
+        arguments: { name: "extra", type: "redis", host: "127.0.0.1" },
+      });
+      const writeText = (writeAttempt.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+      expect(writeAttempt.isError).toBe(true);
+      expect(writeText).toContain("stdio");
     } finally {
       await client.close();
     }
@@ -49,9 +60,10 @@ describe("stdio MCP server", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
+    expect(lines.some((entry) => entry.tool === "list_connections" && entry.user === "local" && entry.status === "ok")).toBe(true);
     const last = lines.at(-1);
-    expect(last.tool).toBe("list_connections");
+    expect(last.tool).toBe("create_connection");
     expect(last.user).toBe("local");
-    expect(last.status).toBe("ok");
+    expect(last.status).toBe("error");
   }, 30000);
 });

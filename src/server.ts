@@ -4,18 +4,21 @@ import type { LoadedConfig } from "./config.js";
 import { ConnectionManager } from "./connections/manager.js";
 import { diag, type Logger } from "./logging.js";
 import { toolDefinitions } from "./tools/index.js";
-import type { ToolContext } from "./tools/types.js";
+import type { ConnectionManageCapability, ToolContext } from "./tools/types.js";
 import { VERSION } from "./version.js";
 
 /**
  * 创建一个 MCP server，注册全部工具（stdio 与 HTTP 传输共用同一份注册逻辑）。
  * `user` 为该 server 实例绑定的调用者身份：stdio 为 "local"，HTTP 为 API Key 名称。
+ * `manage` 为可选的连接管理能力：HTTP 模式注入，stdio 模式不注入（连接管理工具只读）。
  */
 export function createMcpServer(
   config: LoadedConfig,
   logger: Logger,
   user: string,
   connections: ConnectionManager,
+  manage?: ConnectionManageCapability,
+  publicBaseUrl?: string,
 ): McpServer {
   const server = new McpServer({ name: "infinmcp", version: VERSION });
 
@@ -29,7 +32,14 @@ export function createMcpServer(
       },
       async (args: unknown) => {
         const started = Date.now();
-        const ctx: ToolContext = { config, logger, connections, user };
+        const ctx: ToolContext = {
+          config,
+          logger,
+          connections,
+          user,
+          ...(publicBaseUrl ? { publicBaseUrl } : {}),
+          manage,
+        };
         try {
           const result = await def.handler((args ?? {}) as Record<string, unknown>, ctx);
           logger.record({

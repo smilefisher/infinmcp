@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { mysqlQuery, mysqlSchema } from "../connections/mysql.js";
-import { analyzeReadOnlySql, effectiveRowLimit } from "../readonly.js";
+import { analyzeReadOnlySql, effectiveConnectionRowLimit } from "../readonly.js";
 import type { ToolDefinition } from "./types.js";
+import { formatRowsResult } from "./queryOutput.js";
 
 const paramSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
@@ -10,12 +11,27 @@ export const mysqlQueryTool: ToolDefinition = {
   title: "MySQL 只读查询",
   description:
     "在指定 MySQL 连接上执行只读 SQL。仅允许单条 SELECT / SHOW / EXPLAIN / DESC / DESCRIBE / WITH 语句；" +
-    "禁止多语句与任何写操作（含 INTO OUTFILE、FOR UPDATE、EXPLAIN ANALYZE）。返回行数受服务端 maxRows 限制。",
+    "禁止多语句与任何写操作（含 INTO OUTFILE、FOR UPDATE、EXPLAIN ANALYZE）。返回行数受服务端 maxRows 限制。" +
+    "支持 columns 列裁剪、max_cell_width 截断；output=auto 时大结果会自动导出到服务端文件，" +
+    "只返回前 20 行预览与下载信息（导出文件保留完整值，不受截断影响）。",
   inputSchema: {
     connection: z.string().describe("连接名，见 list_connections"),
     sql: z.string().describe("只读 SQL，例如 SELECT id, name FROM users WHERE id = ?"),
     params: z.array(paramSchema).optional().describe("SQL 中 ? 占位符对应的参数"),
     limit: z.number().int().positive().optional().describe("期望返回行数上限（不会超过服务端 maxRows）"),
+    columns: z.array(z.string()).optional().describe("只返回这些列（按给定顺序；列不存在会报错）"),
+    max_cell_width: z
+      .number()
+      .int()
+      .min(16)
+      .max(65536)
+      .optional()
+      .describe("单元格最大字符数，默认取服务端 limits.maxCellWidth（512）"),
+    output: z
+      .enum(["auto", "inline", "file"])
+      .optional()
+      .describe("auto=结果过大时自动落文件（默认）；inline=始终直接返回；file=始终落文件"),
+    format: z.enum(["jsonl", "csv"]).optional().describe("导出文件格式，默认 jsonl（仅落文件时生效）"),
   },
   async handler(args, ctx) {
     const connection = typeof args.connection === "string" ? args.connection : "";
@@ -24,7 +40,8 @@ export const mysqlQueryTool: ToolDefinition = {
     const params = Array.isArray(args.params) ? (args.params as unknown[]) : [];
     const requested = typeof args.limit === "number" ? args.limit : undefined;
 
-    const limit = effectiveRowLimit(requested, ctx.config.limits.maxRows);
+    const config = ctx.connections.getConfig(connection);
+    const limit = effectiveConnectionRowLimit(requested, config.maxRows, ctx.config.limits.maxRows);
 
     const checked = analyzeReadOnlySql(sql, limit);
     if (!checked.ok) throw new Error(`拒绝执行: ${checked.reason}`);
@@ -37,21 +54,20 @@ export const mysqlQueryTool: ToolDefinition = {
 
     const header =
       `连接: ${connection}\n` +
-      `行数: ${result.rowCount}${result.truncated ? "（已截断）" : ""}\n` +
-      `列: ${result.columns.join(", ") || "(无)"}`;
+      `行数: ${result.rowCount}${result.truncated ? "（已截断）" : ""}`;
 
-    return {
-      text: `${header}\n\n${JSON.stringify(result.rows, null, 2)}`,
-      structured: {
-        columns: result.columns,
-        rows: result.rows,
-        rowCount: result.rowCount,
-        truncated: result.truncated,
-      },
+    return formatRowsResult({
+      ctx,
+      args,
       connection,
+      prefix: connection,
+      header,
+      availableColumns: result.columns,
+      rows: result.rows,
       rowCount: result.rowCount,
-      summary: `mysql_query on ${connection} (${result.rowCount} rows${result.truncated ? ", truncated" : ""})`,
-    };
+      truncated: result.truncated,
+      summaryPrefix: `mysql_query on ${connection}`,
+    });
   },
 };
 
@@ -80,7 +96,7 @@ export const mysqlSchemaTool: ToolDefinition = {
       database,
       table,
       defaultDatabase,
-      maxRows: ctx.config.limits.maxRows,
+      maxRows: effectiveConnectionRowLimit(undefined, config.maxRows, ctx.config.limits.maxRows),
       timeoutMs: ctx.config.limits.timeoutMs,
     });
 

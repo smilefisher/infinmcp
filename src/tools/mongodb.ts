@@ -5,11 +5,29 @@ import {
   mongoListCollections,
   mongoSchema,
 } from "../connections/mongodb.js";
-import { checkMongoFilter, checkMongoPipeline, effectiveRowLimit } from "../readonly.js";
+import { checkMongoFilter, checkMongoPipeline, effectiveConnectionRowLimit } from "../readonly.js";
+import { formatRowsResult } from "./queryOutput.js";
 import type { ToolContext, ToolDefinition } from "./types.js";
 
 const jsonObject = z.record(z.string(), z.unknown());
 const pipelineStage = z.record(z.string(), z.unknown());
+
+/** 计算生效的行数上限：连接级 maxRows 与全局 maxRows 取较小值。 */
+function rowLimit(ctx: ToolContext, connection: string, requested: number | undefined): number {
+  return effectiveConnectionRowLimit(
+    requested,
+    ctx.connections.getConfig(connection).maxRows,
+    ctx.config.limits.maxRows,
+  );
+}
+
+/** Mongo 文档转成可裁剪 / 导出的行；极端情况下（聚合返回非对象）包成 { value }。 */
+function docToRow(doc: unknown): Record<string, unknown> {
+  if (doc !== null && typeof doc === "object" && !Array.isArray(doc)) {
+    return doc as Record<string, unknown>;
+  }
+  return { value: doc };
+}
 
 /**
  * 解析要操作的库：参数优先，其次连接配置里的默认库。
@@ -31,7 +49,9 @@ export const mongoFindTool: ToolDefinition = {
   title: "MongoDB 查询文档",
   description:
     "在指定集合上执行只读查询（find）。支持 filter / projection / sort / skip / limit；" +
-    "禁止 $where 等服务端脚本。返回条数受服务端 maxRows 限制。可用 {\"$oid\":\"...\"} / {\"$date\":\"ISO\"} 表示 ObjectId / 日期。",
+    "禁止 $where 等服务端脚本。返回条数受服务端 maxRows 限制。可用 {\"$oid\":\"...\"} / {\"$date\":\"ISO\"} 表示 ObjectId / 日期。" +
+    "支持 columns 顶层字段裁剪、max_cell_width 截断；output=auto 时大结果会导出到服务端文件，" +
+    "只返回前 20 条预览与下载信息（导出文件保留完整值）。",
   inputSchema: {
     connection: z.string().describe("连接名，见 list_connections"),
     collection: z.string().describe("集合名"),
@@ -41,6 +61,22 @@ export const mongoFindTool: ToolDefinition = {
     sort: z.record(z.string(), z.union([z.number(), z.string()])).optional().describe("排序，例如 {\"createdAt\":-1}"),
     skip: z.number().int().min(0).optional().describe("跳过条数"),
     limit: z.number().int().positive().optional().describe("返回条数上限（不会超过服务端 maxRows）"),
+    columns: z
+      .array(z.string())
+      .optional()
+      .describe("只返回这些顶层字段（按给定顺序；字段不存在会报错；嵌套字段请用 projection）"),
+    max_cell_width: z
+      .number()
+      .int()
+      .min(16)
+      .max(65536)
+      .optional()
+      .describe("单元格最大字符数，默认取服务端 limits.maxCellWidth（512）"),
+    output: z
+      .enum(["auto", "inline", "file"])
+      .optional()
+      .describe("auto=结果过大时自动落文件（默认）；inline=始终直接返回；file=始终落文件"),
+    format: z.enum(["jsonl", "csv"]).optional().describe("导出文件格式，默认 jsonl（仅落文件时生效）"),
   },
   async handler(args, ctx) {
     const connection = typeof args.connection === "string" ? args.connection : "";
@@ -56,10 +92,7 @@ export const mongoFindTool: ToolDefinition = {
     const filterCheck = checkMongoFilter(args.filter);
     if (!filterCheck.ok) throw new Error(`拒绝执行: ${filterCheck.reason}`);
 
-    const limit = effectiveRowLimit(
-      typeof args.limit === "number" ? args.limit : undefined,
-      ctx.config.limits.maxRows,
-    );
+    const limit = rowLimit(ctx, connection, typeof args.limit === "number" ? args.limit : undefined);
 
     const client = ctx.connections.mongoClient(connection);
     const result = await mongoFind(client, {
@@ -79,13 +112,20 @@ export const mongoFindTool: ToolDefinition = {
       `库.集合: ${database}.${collection}\n` +
       `文档数: ${result.rowCount}${result.truncated ? "（已截断）" : ""}`;
 
-    return {
-      text: `${header}\n\n${JSON.stringify(result.documents, null, 2)}`,
-      structured: { documents: result.documents, rowCount: result.rowCount, truncated: result.truncated },
+    return formatRowsResult({
+      ctx,
+      args,
       connection,
+      prefix: `${connection}-${collection}`,
+      header,
+      rows: result.documents.map(docToRow),
       rowCount: result.rowCount,
-      summary: `mongo_find on ${connection} ${database}.${collection} (${result.rowCount} docs)`,
-    };
+      truncated: result.truncated,
+      summaryPrefix: `mongo_find on ${connection} ${database}.${collection}`,
+      showColumns: false,
+      rowsKey: "documents",
+      previewKey: "documentsPreview",
+    });
   },
 };
 
@@ -94,13 +134,31 @@ export const mongoAggregateTool: ToolDefinition = {
   title: "MongoDB 聚合查询",
   description:
     "在指定集合上执行只读聚合管道。禁止写入阶段 $out / $merge，以及 $where / $function / $accumulator 等服务端脚本；" +
-    "会在管道末尾追加 $limit 以限制返回量（受服务端 maxRows 约束）。",
+    "会在管道末尾追加 $limit 以限制返回量（受服务端 maxRows 约束）。" +
+    "支持 columns 顶层字段裁剪、max_cell_width 截断与 output=auto|inline|file；" +
+    "大结果会导出到服务端文件，只返回前 20 条预览与下载信息。",
   inputSchema: {
     connection: z.string().describe("连接名，见 list_connections"),
     collection: z.string().describe("集合名"),
     pipeline: z.array(pipelineStage).describe("聚合管道阶段数组，例如 [{\"$match\":{...}},{\"$group\":{...}}]"),
     database: z.string().optional().describe("库名；缺省使用连接配置里的默认库"),
     limit: z.number().int().positive().optional().describe("返回条数上限（不会超过服务端 maxRows）"),
+    columns: z
+      .array(z.string())
+      .optional()
+      .describe("只返回这些顶层字段（按给定顺序；字段不存在会报错；嵌套字段请在聚合里投影）"),
+    max_cell_width: z
+      .number()
+      .int()
+      .min(16)
+      .max(65536)
+      .optional()
+      .describe("单元格最大字符数，默认取服务端 limits.maxCellWidth（512）"),
+    output: z
+      .enum(["auto", "inline", "file"])
+      .optional()
+      .describe("auto=结果过大时自动落文件（默认）；inline=始终直接返回；file=始终落文件"),
+    format: z.enum(["jsonl", "csv"]).optional().describe("导出文件格式，默认 jsonl（仅落文件时生效）"),
   },
   async handler(args, ctx) {
     const connection = typeof args.connection === "string" ? args.connection : "";
@@ -117,10 +175,7 @@ export const mongoAggregateTool: ToolDefinition = {
     const pipelineCheck = checkMongoPipeline(pipeline);
     if (!pipelineCheck.ok) throw new Error(`拒绝执行: ${pipelineCheck.reason}`);
 
-    const limit = effectiveRowLimit(
-      typeof args.limit === "number" ? args.limit : undefined,
-      ctx.config.limits.maxRows,
-    );
+    const limit = rowLimit(ctx, connection, typeof args.limit === "number" ? args.limit : undefined);
 
     const client = ctx.connections.mongoClient(connection);
     const result = await mongoAggregate(client, {
@@ -137,13 +192,20 @@ export const mongoAggregateTool: ToolDefinition = {
       `阶段数: ${pipeline.length}\n` +
       `文档数: ${result.rowCount}${result.truncated ? "（已截断）" : ""}`;
 
-    return {
-      text: `${header}\n\n${JSON.stringify(result.documents, null, 2)}`,
-      structured: { documents: result.documents, rowCount: result.rowCount, truncated: result.truncated },
+    return formatRowsResult({
+      ctx,
+      args,
       connection,
+      prefix: `${connection}-${collection}`,
+      header,
+      rows: result.documents.map(docToRow),
       rowCount: result.rowCount,
-      summary: `mongo_aggregate on ${connection} ${database}.${collection} (${result.rowCount} docs)`,
-    };
+      truncated: result.truncated,
+      summaryPrefix: `mongo_aggregate on ${connection} ${database}.${collection}`,
+      showColumns: false,
+      rowsKey: "documents",
+      previewKey: "documentsPreview",
+    });
   },
 };
 
@@ -162,10 +224,7 @@ export const mongoListCollectionsTool: ToolDefinition = {
     if (!connection) throw new Error("缺少参数 connection");
 
     const database = resolveDatabase(ctx, connection, args.database);
-    const limit = effectiveRowLimit(
-      typeof args.limit === "number" ? args.limit : undefined,
-      ctx.config.limits.maxRows,
-    );
+    const limit = rowLimit(ctx, connection, typeof args.limit === "number" ? args.limit : undefined);
 
     const client = ctx.connections.mongoClient(connection);
     const result = await mongoListCollections(client, {
@@ -211,8 +270,10 @@ export const mongoSchemaTool: ToolDefinition = {
       throw new Error("未指定 database，且连接配置里也没有默认库；请在参数中提供 database");
     }
 
-    const sampleSize = effectiveRowLimit(
+    const maxRows = rowLimit(ctx, connection, undefined);
+    const sampleSize = effectiveConnectionRowLimit(
       typeof args.sample === "number" ? args.sample : 50,
+      ctx.connections.getConfig(connection).maxRows,
       ctx.config.limits.maxRows,
     );
 
@@ -221,7 +282,7 @@ export const mongoSchemaTool: ToolDefinition = {
       database,
       collection,
       sampleSize,
-      maxRows: ctx.config.limits.maxRows,
+      maxRows,
       timeoutMs: ctx.config.limits.timeoutMs,
     });
 

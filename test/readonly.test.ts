@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeReadOnlySql, effectiveRowLimit, maskSqlLiterals } from "../src/readonly.js";
+import { analyzeReadOnlySql, effectiveConnectionRowLimit, effectiveRowLimit, maskSqlLiterals } from "../src/readonly.js";
 
 const LIMIT = 100;
 
@@ -120,5 +120,13 @@ describe("maskSqlLiterals / effectiveRowLimit", () => {
     expect(effectiveRowLimit(10, 200)).toBe(10);
     expect(effectiveRowLimit(9999, 200)).toBe(200);
     expect(effectiveRowLimit(0, 200)).toBe(200);
+  });
+
+  it("连接级 maxRows 只能调低全局上限", () => {
+    expect(effectiveConnectionRowLimit(undefined, undefined, 100)).toBe(100);
+    expect(effectiveConnectionRowLimit(50, undefined, 100)).toBe(50);
+    expect(effectiveConnectionRowLimit(200, 30, 100)).toBe(30);
+    expect(effectiveConnectionRowLimit(10, 30, 100)).toBe(10);
+    expect(effectiveConnectionRowLimit(500, undefined, 100)).toBe(100);
   });
 });

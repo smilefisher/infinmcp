@@ -200,20 +200,38 @@
         <table>
           <thead><tr><th>工具</th><th>用途</th><th>主要参数</th></tr></thead>
           <tbody>
-            <tr><td class="mono">list_connections</td><td>列出可用连接（口令掩码）</td><td>—</td></tr>
-            <tr><td class="mono">mysql_query</td><td>只读 SQL 查询</td><td><code>connection</code>, <code>sql</code>, <code>params?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">list_connections</td><td>列出可用连接（口令掩码）；带 <code>env</code> / <code>readonly</code> / <code>maxRows</code> 标签</td><td>—</td></tr>
+            <tr><td class="mono">mysql_query</td><td>只读 SQL 查询</td><td><code>connection</code>, <code>sql</code>, <code>params?</code>, <code>limit?</code>, <code>columns?</code>, <code>max_cell_width?</code>, <code>output?</code>, <code>format?</code></td></tr>
+            <tr><td class="mono">mysql_batch_query</td><td>批量只读 SQL（1–20 条，按名字分段返回）</td><td><code>connection</code>, <code>queries[{name?, sql, params?, limit?, columns?, output?, format?}]</code>, <code>max_cell_width?</code></td></tr>
             <tr><td class="mono">mysql_schema</td><td>查库 / 表 / 列 / 索引</td><td><code>connection</code>, <code>database?</code>, <code>table?</code></td></tr>
-            <tr><td class="mono">doris_query</td><td>Doris 只读 SQL 查询</td><td><code>connection</code>, <code>sql</code>, <code>params?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">doris_query</td><td>Doris 只读 SQL 查询</td><td>同 <code>mysql_query</code></td></tr>
+            <tr><td class="mono">doris_batch_query</td><td>Doris 批量只读 SQL</td><td>同 <code>mysql_batch_query</code></td></tr>
             <tr><td class="mono">doris_schema</td><td>Doris 查库 / 表 / 列 / 索引</td><td><code>connection</code>, <code>database?</code>, <code>table?</code></td></tr>
-            <tr><td class="mono">redis_exec</td><td>执行单条只读命令</td><td><code>connection</code>, <code>command</code>, <code>args?</code>, <code>limit?</code></td></tr>
-            <tr><td class="mono">redis_scan</td><td>SCAN 增量扫 key（不阻塞）</td><td><code>connection</code>, <code>pattern?</code>, <code>cursor?</code>, <code>type?</code>, <code>limit?</code></td></tr>
-            <tr><td class="mono">mongo_find</td><td>查询文档</td><td><code>connection</code>, <code>collection</code>, <code>database?</code>, <code>filter?</code>, <code>projection?</code>, <code>sort?</code>, <code>skip?</code>, <code>limit?</code></td></tr>
-            <tr><td class="mono">mongo_aggregate</td><td>只读聚合管道</td><td><code>connection</code>, <code>collection</code>, <code>pipeline</code>, <code>database?</code>, <code>limit?</code></td></tr>
+            <tr><td class="mono">redis_exec</td><td>执行单条只读命令</td><td><code>connection</code>, <code>command</code>, <code>args?</code>, <code>limit?</code>, <code>max_cell_width?</code>, <code>output?</code>, <code>format?</code></td></tr>
+            <tr><td class="mono">redis_scan</td><td>SCAN 增量扫 key（不阻塞）</td><td><code>connection</code>, <code>pattern?</code>, <code>cursor?</code>, <code>type?</code>, <code>limit?</code>, <code>max_cell_width?</code>, <code>output?</code>, <code>format?</code></td></tr>
+            <tr><td class="mono">mongo_find</td><td>查询文档</td><td><code>connection</code>, <code>collection</code>, <code>database?</code>, <code>filter?</code>, <code>projection?</code>, <code>sort?</code>, <code>skip?</code>, <code>limit?</code>, <code>columns?</code>, <code>max_cell_width?</code>, <code>output?</code>, <code>format?</code></td></tr>
+            <tr><td class="mono">mongo_aggregate</td><td>只读聚合管道</td><td><code>connection</code>, <code>collection</code>, <code>pipeline</code>, <code>database?</code>, <code>limit?</code>, <code>columns?</code>, <code>max_cell_width?</code>, <code>output?</code>, <code>format?</code></td></tr>
             <tr><td class="mono">mongo_list_collections</td><td>列集合；无默认库时列数据库</td><td><code>connection</code>, <code>database?</code>, <code>limit?</code></td></tr>
             <tr><td class="mono">mongo_schema</td><td>采样推断字段与类型</td><td><code>connection</code>, <code>collection</code>, <code>database?</code>, <code>sample?</code></td></tr>
+            <tr><td class="mono">create_connection</td><td>新增连接并立即生效（需管理员开启）</td><td><code>name</code>, <code>type</code>, <code>host?</code>, <code>port?</code>, <code>user?</code>, <code>password?</code>, <code>database?</code>, <code>charset?</code>, <code>db?</code>, <code>tls?</code>, <code>uri?</code>, <code>env?</code>, <code>readonly?</code>, <code>maxRows?</code></td></tr>
+            <tr><td class="mono">update_connection</td><td>更新连接并立即生效（部分更新）</td><td>同上；<strong>只传要改的字段</strong>，未传的保持原值（<code>password?</code> / <code>uri?</code> 省略也沿用旧值）</td></tr>
+            <tr><td class="mono">delete_connection</td><td>删除连接（不可逆）</td><td><code>name</code></td></tr>
+            <tr><td class="mono">test_connection</td><td>测试连通性（只读探测，不需要开启）</td><td><code>name</code></td></tr>
           </tbody>
         </table>
       </div>
+
+      <h3>批量查询与结果处理</h3>
+      <ul class="small">
+        <li><strong>批量查询</strong>：<code>mysql_batch_query</code> / <code>doris_batch_query</code> 一次可跑 1–20 条只读 SQL，
+          每条用 <code>name</code> 命名（缺省 <code>q1..qN</code>），结果按名字分段；单条失败不影响其他条目。</li>
+        <li><strong><code>max_cell_width</code></strong>：单值最大字符数，默认 512；超出会截断并标注「已截断」。</li>
+        <li><strong><code>columns</code></strong>：只保留指定列（SQL / Mongo 行结果；Mongo 只作用于顶层字段）。</li>
+        <li><strong><code>output</code></strong>：<code>auto</code>（默认，超过阈值自动落文件）/ <code>inline</code> / <code>file</code>；
+          <strong><code>format</code></strong>：<code>jsonl</code>（默认）/ <code>csv</code>。</li>
+        <li>落文件时文件里保留<strong>完整值</strong>，只有直接返回和预览按 <code>max_cell_width</code> 截断；
+          HTTP 模式返回 <code>downloadUrl</code>，stdio 模式返回服务端路径 <code>downloadPath</code>。</li>
+      </ul>
 
       <h3>调用示例</h3>
       <div class="code"><button class="copy" type="button">复制</button><pre><code>// MySQL：按 id 取一行（用参数占位，别拼字符串）
@@ -230,6 +248,26 @@ doris_query
   "connection": "warehouse",
   "sql": "SELECT city, count(*) AS n FROM orders WHERE dt >= ? GROUP BY city ORDER BY n DESC",
   "params": ["2024-01-01"]
+}
+
+// 批量查询：一次跑多条只读 SQL，按 name 分段返回
+mysql_batch_query
+{
+  "connection": "main",
+  "queries": [
+    { "name": "count", "sql": "SELECT COUNT(*) AS n FROM users" },
+    { "name": "recent", "sql": "SELECT id, name FROM users ORDER BY id DESC LIMIT 5" }
+  ]
+}
+
+// 结果处理：只保留部分列；大结果直接导出 CSV（返回下载地址）
+mysql_query
+{
+  "connection": "main",
+  "sql": "SELECT id, name, profile_json FROM users",
+  "columns": ["id", "name"],
+  "output": "file",
+  "format": "csv"
 }
 
 // Redis：读一个 hash
@@ -259,7 +297,29 @@ mongo_aggregate
     { "$group": { "_id": "$status", "n": { "$sum": 1 } } },
     { "$sort": { "n": -1 } }
   ]
-}</code></pre></div>
+}
+
+// 连接管理：需管理员在「连接」页勾选「允许 AI 管理连接」
+create_connection
+{
+  "name": "report",
+  "type": "doris",
+  "host": "10.0.0.20",
+  "port": 9030,
+  "user": "readonly",
+  "password": "你的口令",
+  "database": "app"
+}
+
+test_connection
+{ "name": "report" }
+
+// 部分更新：只改端口，database / 口令等未传字段保持原值
+update_connection
+{ "name": "report", "port": 9031 }
+
+delete_connection
+{ "name": "report" }</code></pre></div>
 
       <h2>只读边界：这些会被拒绝</h2>
       <div class="table-wrap">
@@ -290,17 +350,35 @@ mongo_aggregate
         </table>
       </div>
       <p class="small muted">返回值有行数上限（配置里的 <code>limits.maxRows</code>，当前值见「连接」页顶部），
-      超出的部分会被截断并标注「已截断」。单次查询还有超时限制 <code>limits.timeoutMs</code>。</p>
+      超出的部分会被截断并标注「已截断」。单元格默认最多 512 字符（<code>limits.maxCellWidth</code>）；
+      大结果可用 <code>output: "file"</code> 导出。单次查询还有超时限制 <code>limits.timeoutMs</code>。</p>
 
       <h2>连接配置（管理员）</h2>
       <ul>
-        <li>只有 <code>admin</code> 能在「连接」页新增 / 编辑 / 删除连接，并点「测试」验证连通性。</li>
+        <li>只有 <code>admin</code> 能在「连接」页新增 / 编辑 / 删除 / 重命名连接，并点「测试」验证连通性。
+            重命名支持中文（例如「测试环境mysql」），保存后旧名立即失效。</li>
         <li>保存后<strong>立即生效</strong>，不用重启服务，MCP 客户端下一次调用就能用上新连接。</li>
         <li>编辑已有连接时，<strong>口令 / URI 留空表示沿用旧值</strong>，不用重新输入密钥。</li>
         <li>连接配置保存在服务端数据目录的 <code>connections.json</code>（权限 <code>0600</code>）。</li>
         <li>也可以写在服务端配置文件的 <code>connections</code> 里（那种方式改完<strong>要重启</strong>）；
             同名时以 <code>connections.json</code> 为准。</li>
+        <li>默认<strong>不允许 AI 建 / 改连接</strong>。需要时在「连接」页勾选「允许 AI 管理连接」，
+            MCP 客户端即可调用 <code>create_connection</code> / <code>update_connection</code> /
+            <code>delete_connection</code> 自行增删改；AI 建好的连接与本页手动添加的完全一样，改完立即生效。</li>
       </ul>
+
+      <p class="small"><strong>所有连接都可选填的标签</strong></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>取值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">env</td><td><code>prod</code> / <code>test</code> / <code>dev</code></td><td>环境标签，只随 <code>list_connections</code> 返回；服务端不会据此切换环境</td></tr>
+            <tr><td class="mono">readonly</td><td><code>true</code> / <code>false</code></td><td>数据库账号是否只读；<code>false</code> 表示可能有写权限（高危提示），不填 = 未标注</td></tr>
+            <tr><td class="mono">maxRows</td><td>正整数</td><td>该连接的行数上限，只能调低全局 <code>limits.maxRows</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small muted">标签不参与只读判断：即使 <code>env: "test"</code> 或 <code>readonly: false</code>，写操作照样被拒。</p>
 
       <h3>每种数据库要填什么</h3>
 
@@ -376,8 +454,13 @@ mongo_aggregate
         <table>
           <thead><tr><th>配置</th><th>默认</th><th>说明</th></tr></thead>
           <tbody>
-            <tr><td class="mono">limits.maxRows</td><td>200</td><td>单次返回的最大行数 / 文档数，超出会标注「已截断」</td></tr>
+            <tr><td class="mono">limits.maxRows</td><td>200</td><td>单次返回的最大行数 / 文档数，超出会标注「已截断」；连接可配更小的 <code>maxRows</code></td></tr>
             <tr><td class="mono">limits.timeoutMs</td><td>10000</td><td>既作查询超时，也作连接超时</td></tr>
+            <tr><td class="mono">limits.maxCellWidth</td><td>512</td><td>单元格最大字符数，超出截断并标注「已截断」</td></tr>
+            <tr><td class="mono">limits.inlineMaxBytes</td><td>262144</td><td><code>output: "auto"</code> 时，结果估算超过该字节数就落文件</td></tr>
+            <tr><td class="mono">limits.inlineMaxRows</td><td>1000</td><td><code>output: "auto"</code> 时，结果行数超过该值就落文件</td></tr>
+            <tr><td class="mono">limits.exportTtlHours</td><td>24</td><td>导出文件保留小时数</td></tr>
+            <tr><td class="mono">limits.exportMaxFiles</td><td>200</td><td>导出目录最多保留的文件数</td></tr>
           </tbody>
         </table>
       </div>
@@ -394,7 +477,13 @@ mongo_aggregate
         <p>服务端到数据库的网络或口令有问题。管理员可在「连接」页点「测试」看具体报错（例如 <code>ECONNREFUSED</code> 表示端口不通）。</p>
       </details>
       <details><summary>结果被截断 / 只返回了一部分</summary>
-        <p>命中服务端行数上限 <code>limits.maxRows</code>。请缩小查询范围（加 <code>WHERE</code>、<code>limit</code>、时间过滤），或让管理员调高上限。</p>
+        <p>行数被 <code>limits.maxRows</code> 截断时，请缩小查询范围（加 <code>WHERE</code>、<code>limit</code>、时间过滤），或让管理员调高上限。
+        某个字段显示「已截断」是命中了 <code>limits.maxCellWidth</code>，可调大 <code>max_cell_width</code>，
+        或用 <code>output: "file"</code> 导出完整值。</p>
+      </details>
+      <details><summary>导出文件在哪里下载？</summary>
+        <p>HTTP 模式的结果里会带 <code>downloadUrl</code>（形如 <code>/api/exports/xxx.csv</code>），带同一个 API Key 访问即可下载。
+        文件保存在服务端数据目录的 <code>exports/</code> 下，按配置的保留时长 / 最大文件数自动清理；stdio 模式返回的是服务端本地路径。</p>
       </details>
       <details><summary>谁调用过、调了什么？</summary>
         <p>看「日志」页：每条记录都有调用者（user）、工具、目标连接、耗时、行数、成功/失败，并支持按条件筛选与实时刷新。</p>
@@ -405,6 +494,14 @@ mongo_aggregate
       <details><summary>怎么新增一个数据库连接？</summary>
         <p>找 <code>admin</code> 在「连接」页点「新增连接」，按上面「每种数据库要填什么」填好即可，<strong>保存即生效</strong>，不用重启。
         <code>user</code> 角色看不到这些按钮，属于权限设计。</p>
+      </details>
+      <details><summary>AI 能自己新增 / 修改数据库连接吗？</summary>
+        <p>默认<strong>不能</strong>。管理员在「连接」页勾选「允许 AI 管理连接」后，MCP 客户端才能调用
+        <code>create_connection</code> / <code>update_connection</code> / <code>delete_connection</code>
+        自行增删改连接，改完<strong>立即生效</strong>，并和手动添加的一样出现在本页。开关关闭时调用这些工具会被拒绝，
+        但 <code>test_connection</code>（只读测试）与所有查询工具不受影响。</p>
+        <p class="small muted">安全提醒：开启后服务端会按 AI 给的地址发起连接（存在内网探测风险），
+        且口令会进入 AI 对话记录；请只在受信任的客户端下开启，并尽量使用只读账号。默认关闭就是这个原因。</p>
       </details>
       <details><summary>Claude Code 里显示 Failed to connect</summary>
         <p>按顺序查：① <code>url</code> 是否带了结尾的 <code>/mcp</code>；② <code>type</code> 是否写了 <code>"http"</code>（漏了会被当成 stdio 跳过）；
@@ -436,6 +533,18 @@ mongo_aggregate
         </div>
       </div>
       <p id="conn-readonly" class="muted small" hidden>你当前是 user 角色，只能查看连接列表；新增 / 编辑 / 删除需要管理员操作。</p>
+      <div id="ai-write-box" class="row" hidden style="margin:4px 0 12px">
+        <label class="small row" style="gap:6px">
+          <input type="checkbox" id="ai-write-toggle" />
+          允许 AI 管理连接（新增 / 更新 / 删除）
+        </label>
+        <span id="ai-write-state" class="muted small"></span>
+      </div>
+      <p id="ai-write-hint" class="small muted" hidden>
+        默认关闭。开启后，MCP 客户端可调用 <code>create_connection</code> / <code>update_connection</code> /
+        <code>delete_connection</code> 自行增删改连接，改完立即生效，并和手动添加的一样出现在下表。
+        仅在受信任的客户端下开启（服务端会按 AI 给的地址发起连接，存在内网探测风险；口令也会进入 AI 对话记录）。
+      </p>
       <div id="conn-list" class="table-wrap"></div>
     </div>
   </section>
@@ -472,8 +581,9 @@ mongo_aggregate
     <h3 id="conn-dialog-title">新增连接</h3>
     <div class="field">
       <label for="cf-name">连接名</label>
-      <input id="cf-name" required pattern="[A-Za-z0-9_.\-]{1,64}" placeholder="例如 main" />
-      <span class="hint">字母 / 数字 / 下划线 / 点 / 连字符，最长 64</span>
+      <input id="cf-name" required maxlength="64" placeholder="例如 main 或 测试环境mysql" />
+      <span class="hint">支持中文 / 字母 / 数字 / 空格 / 下划线 / 点 / 连字符，最长 64</span>
+      <span class="hint" id="cf-name-note" hidden></span>
     </div>
     <div class="field">
       <label for="cf-type">类型</label>
@@ -483,6 +593,33 @@ mongo_aggregate
         <option value="redis">Redis</option>
         <option value="mongodb">MongoDB</option>
       </select>
+    </div>
+
+    <div class="grid2">
+      <div class="field">
+        <label for="cf-env">环境标签</label>
+        <select id="cf-env">
+          <option value="">未标注</option>
+          <option value="prod">prod（生产）</option>
+          <option value="test">test（测试）</option>
+          <option value="dev">dev（开发）</option>
+        </select>
+        <span class="hint">仅用于展示与挑选，服务端不会按它切换环境</span>
+      </div>
+      <div class="field">
+        <label for="cf-readonly">账号权限</label>
+        <select id="cf-readonly">
+          <option value="">未标注</option>
+          <option value="true">只读账号</option>
+          <option value="false">可能有写权限</option>
+        </select>
+        <span class="hint">选「可能有写权限」只作提示，不改变只读校验</span>
+      </div>
+    </div>
+    <div class="field">
+      <label for="cf-maxrows">该连接行数上限</label>
+      <input id="cf-maxrows" type="number" min="1" placeholder="留空则不单独限制" />
+      <span class="hint">只能调低全局 limits.maxRows；留空表示直接用全局值</span>
     </div>
 
     <div data-group="mysql" hidden>

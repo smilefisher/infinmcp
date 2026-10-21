@@ -8,6 +8,7 @@ import {
   connectionsFilePath,
   deleteConnection,
   readConnections,
+  renameConnection,
   upsertConnection,
   writeConnections,
 } from "../src/connectionsStore.js";
@@ -80,11 +81,54 @@ describe("connectionsStore", () => {
     expect(Object.keys(readConnections(dataDir))).toEqual(["b"]);
   });
 
-  it("连接名不合法时报错", () => {
-    for (const bad of ["", "a b", "a/b", "a".repeat(65), "中文"]) {
+  it("连接名支持中文与空格，拒绝非法字符", () => {
+    for (const bad of ["", "a/b", "a".repeat(65), " a", "a ", "a  b", "a\nb", "a".repeat(64) + "x"]) {
       expect(() => assertValidConnectionName(bad)).toThrowError(ConnectionStoreError);
     }
-    expect(() => assertValidConnectionName("app_main-1.2")).not.toThrow();
+    for (const good of ["app_main-1.2", "测试环境mysql", "测试 环境-mysql_1.2", "生产 MySQL"]) {
+      expect(() => assertValidConnectionName(good)).not.toThrow();
+    }
+  });
+
+  it("保存并读回连接标签 env / readonly / maxRows", () => {
+    upsertConnection(dataDir, "测试环境mysql", {
+      type: "mysql",
+      host: "h",
+      user: "ro",
+      env: "test",
+      readonly: true,
+      maxRows: 20,
+    });
+    expect(readConnections(dataDir)["测试环境mysql"]).toMatchObject({
+      env: "test",
+      readonly: true,
+      maxRows: 20,
+    });
+    expect(() =>
+      upsertConnection(dataDir, "x", { type: "mysql", host: "h", user: "ro", env: "staging" }),
+    ).toThrowError(/env/);
+  });
+
+  it("重命名连接：保留配置、旧名消失", () => {
+    upsertConnection(dataDir, "old", {
+      type: "mysql",
+      host: "h",
+      user: "ro",
+      password: "pw",
+      env: "test",
+    });
+    expect(renameConnection(dataDir, "old", "新名")).toBe(true);
+    const connections = readConnections(dataDir);
+    expect(connections.old).toBeUndefined();
+    expect(connections["新名"]).toMatchObject({ type: "mysql", host: "h", password: "pw", env: "test" });
+  });
+
+  it("重命名：目标已存在时报错，旧名不存在时返回 false", () => {
+    upsertConnection(dataDir, "a", { type: "redis", host: "h" });
+    upsertConnection(dataDir, "b", { type: "redis", host: "h" });
+    expect(() => renameConnection(dataDir, "a", "b")).toThrowError(/已存在/);
+    expect(renameConnection(dataDir, "missing", "c")).toBe(false);
+    expect(renameConnection(dataDir, "a", "a")).toBe(false);
   });
 
   it("配置非法时报错并给出字段路径", () => {

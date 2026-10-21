@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
+import { readSettings } from "./settingsStore.js";
 
 /** 配置相关的可读错误，CLI 捕获后直接展示 message。 */
 export class ConfigError extends Error {
@@ -62,8 +63,22 @@ export function substituteEnv<T>(value: T, missing: Set<string>, env: NodeJS.Pro
 
 const PortSchema = z.number().int().min(1).max(65535);
 
+/**
+ * 所有连接共用的可选元数据。
+ * 只做描述与展示：服务端不按 `env` 路由，也不因 `readonly` 放行 / 拦截任何操作。
+ */
+const ConnectionMetaFields = {
+  /** 环境标签，供调用方自行决策（例如优先选 test）。 */
+  env: z.enum(["prod", "test", "dev"]).optional(),
+  /** 数据库账号是否只读：true=只读账号；false=账号可能有写权限（高危）；不填=未知。 */
+  readonly: z.boolean().optional(),
+  /** 该连接的行数上限；只能调低全局 limits.maxRows，不能突破。 */
+  maxRows: z.number().int().min(1).optional(),
+};
+
 const MysqlConnectionSchema = z.object({
   type: z.literal("mysql"),
+  ...ConnectionMetaFields,
   host: z.string().min(1),
   port: PortSchema.optional(),
   user: z.string().min(1),
@@ -74,6 +89,7 @@ const MysqlConnectionSchema = z.object({
 
 const DorisConnectionSchema = z.object({
   type: z.literal("doris"),
+  ...ConnectionMetaFields,
   host: z.string().min(1),
   port: PortSchema.optional(),
   user: z.string().min(1),
@@ -84,6 +100,7 @@ const DorisConnectionSchema = z.object({
 
 const RedisConnectionSchema = z.object({
   type: z.literal("redis"),
+  ...ConnectionMetaFields,
   host: z.string().min(1),
   port: PortSchema.optional(),
   username: z.string().optional(),
@@ -94,6 +111,7 @@ const RedisConnectionSchema = z.object({
 
 const MongoConnectionSchema = z.object({
   type: z.literal("mongodb"),
+  ...ConnectionMetaFields,
   uri: z.string().min(1),
   database: z.string().optional(),
 });
@@ -115,21 +133,35 @@ export const ServerSchema = z.object({
   host: z.string().min(1).default("0.0.0.0"),
   port: PortSchema.default(8787),
   apiKeys: z.array(ApiKeySchema).default([]),
+  /** 是否允许 AI 通过 MCP 工具新增 / 更新 / 删除连接（默认关闭；可由 Web 控制台勾选覆盖）。 */
+  allowAiConnectionWrites: z.boolean().default(false),
 });
 
 export const LimitsSchema = z.object({
   maxRows: z.number().int().min(1).default(200),
   timeoutMs: z.number().int().min(1).default(10000),
+  /** 单元格最大字符数；超过则截断并标注「已截断」。 */
+  maxCellWidth: z.number().int().min(16).max(65536).default(512),
+  /** auto 模式阈值：结果 JSON 估算超过该字节数时落文件。 */
+  inlineMaxBytes: z.number().int().min(1024).default(262144),
+  /** auto 模式阈值：结果行数超过该值时落文件。 */
+  inlineMaxRows: z.number().int().min(1).default(1000),
+  /** 导出文件保留时长（小时）。 */
+  exportTtlHours: z.number().min(1).default(24),
+  /** 导出目录最多保留文件数（含各连接）。 */
+  exportMaxFiles: z.number().int().min(1).default(200),
 });
 
 export const LogsSchema = z.object({
   file: z.string().min(1).default(DEFAULT_LOG_FILE),
 });
 
+const DEFAULT_LIMITS = LimitsSchema.parse({});
+
 const RawConfigSchema = z.object({
   server: ServerSchema.optional(),
   connections: z.record(z.string().min(1), ConnectionSchema).default({}),
-  limits: LimitsSchema.default({ maxRows: 200, timeoutMs: 10000 }),
+  limits: LimitsSchema.optional(),
   logs: LogsSchema.default({ file: DEFAULT_LOG_FILE }),
 });
 
@@ -155,6 +187,8 @@ export interface LoadedConfig {
   dataDir: string;
   server: z.infer<typeof ServerSchema>;
   connections: Record<string, ConnectionConfig>;
+  /** 仅出现在配置文件里的连接名（用于改名 / 删除时给出更准确的提示）。 */
+  staticConnectionNames: Set<string>;
   limits: z.infer<typeof LimitsSchema>;
   logs: z.infer<typeof LogsSchema>;
   /** 加载过程中的非致命提示。 */
@@ -244,6 +278,10 @@ export function loadConfig(options: LoadOptions = {}): LoadedConfig {
     cwd,
   );
 
+  // 运行时设置（settings.json，Web 勾选写入）覆盖配置文件里的默认值。
+  const settings = readSettings(dataDir);
+
+  const staticConnectionNames = new Set(Object.keys(parsed.data.connections));
   const connections: Record<string, ConnectionConfig> = { ...parsed.data.connections };
   const connectionsFile = join(dataDir, CONNECTIONS_FILE);
   if (existsSync(connectionsFile)) {
@@ -268,6 +306,9 @@ export function loadConfig(options: LoadOptions = {}): LoadedConfig {
   }
 
   const server = parsed.data.server ?? ServerSchema.parse({});
+  if (settings.allowAiConnectionWrites !== undefined) {
+    server.allowAiConnectionWrites = settings.allowAiConnectionWrites;
+  }
   const keyNames = new Set<string>();
   for (const apiKey of server.apiKeys) {
     if (keyNames.has(apiKey.name)) {
@@ -283,7 +324,8 @@ export function loadConfig(options: LoadOptions = {}): LoadedConfig {
     dataDir,
     server,
     connections,
-    limits: parsed.data.limits,
+    staticConnectionNames,
+    limits: parsed.data.limits ?? DEFAULT_LIMITS,
     logs,
     warnings,
   };
@@ -310,6 +352,14 @@ export function redactMongoUri(uri: string): string {
 export interface SafeConnectionInfo {
   name: string;
   type: "mysql" | "doris" | "redis" | "mongodb";
+  /** 环境标签（仅元数据，服务端不据此路由）。 */
+  env?: "prod" | "test" | "dev";
+  /** 数据库账号是否只读（仅元数据）：true=只读；false=可能有写权限；缺省=未知。 */
+  readonly?: boolean;
+  /** 该连接实际生效的行数上限（min(本连接设置, 全局 limits.maxRows)）。 */
+  maxRows?: number;
+  /** 连接自己配置的 maxRows（未配置时缺省）。 */
+  maxRowsOverride?: number;
   host?: string;
   port?: number;
   database?: string;
@@ -319,11 +369,25 @@ export interface SafeConnectionInfo {
   hasPassword: boolean;
 }
 
-export function safeConnectionInfo(name: string, config: ConnectionConfig): SafeConnectionInfo {
+export function safeConnectionInfo(
+  name: string,
+  config: ConnectionConfig,
+  globalMaxRows?: number,
+): SafeConnectionInfo {
+  const effectiveMaxRows =
+    globalMaxRows === undefined ? config.maxRows : Math.min(config.maxRows ?? globalMaxRows, globalMaxRows);
+  const meta = {
+    ...(config.env ? { env: config.env } : {}),
+    ...(config.readonly !== undefined ? { readonly: config.readonly } : {}),
+    ...(effectiveMaxRows !== undefined ? { maxRows: effectiveMaxRows } : {}),
+    ...(config.maxRows !== undefined ? { maxRowsOverride: config.maxRows } : {}),
+  };
+
   if (config.type === "mysql" || config.type === "doris") {
     return {
       name,
       type: config.type,
+      ...meta,
       host: config.host,
       port: config.port ?? (config.type === "mysql" ? 3306 : 9030),
       database: config.database,
@@ -335,6 +399,7 @@ export function safeConnectionInfo(name: string, config: ConnectionConfig): Safe
     return {
       name,
       type: "redis",
+      ...meta,
       host: config.host,
       port: config.port ?? 6379,
       db: config.db,
@@ -351,6 +416,7 @@ export function safeConnectionInfo(name: string, config: ConnectionConfig): Safe
   return {
     name,
     type: "mongodb",
+    ...meta,
     database: config.database,
     uri: redactMongoUri(config.uri),
     hasPassword,
@@ -361,16 +427,23 @@ export function safeConnectionInfo(name: string, config: ConnectionConfig): Safe
 export function describeConnection(name: string, config: ConnectionConfig): string {
   const info = safeConnectionInfo(name, config);
   const secret = info.hasPassword ? ", password=***" : "";
+  let base: string;
   if (info.type === "mysql" || info.type === "doris") {
     const db = info.database ? `/${info.database}` : "";
-    return `${name} [${info.type}] ${info.user}@${info.host}:${info.port}${db}${secret}`;
-  }
-  if (info.type === "redis") {
+    base = `${name} [${info.type}] ${info.user}@${info.host}:${info.port}${db}${secret}`;
+  } else if (info.type === "redis") {
     const db = info.db !== undefined ? ` db=${info.db}` : "";
-    return `${name} [redis] ${info.host}:${info.port}${db}${secret}`;
+    base = `${name} [redis] ${info.host}:${info.port}${db}${secret}`;
+  } else {
+    const db = info.database ? ` db=${info.database}` : "";
+    base = `${name} [mongodb] ${info.uri}${db}${secret}`;
   }
-  const db = info.database ? ` db=${info.database}` : "";
-  return `${name} [mongodb] ${info.uri}${db}${secret}`;
+
+  const tags: string[] = [];
+  if (info.env) tags.push(`env=${info.env}`);
+  if (info.readonly !== undefined) tags.push(`readonly=${info.readonly}`);
+  if (config.maxRows !== undefined) tags.push(`maxRows=${config.maxRows}`);
+  return tags.length > 0 ? `${base} [${tags.join(" ")}]` : base;
 }
 
 /** 生成整份配置的脱敏多行摘要。 */
@@ -383,6 +456,7 @@ export function summarizeConfig(config: LoadedConfig): string[] {
 
   const keys = config.server.apiKeys.map((k) => `${k.name}(${k.role})`);
   lines.push(`API Keys: ${keys.length > 0 ? keys.join(", ") : "(未配置)"}`);
+  lines.push(`AI 管理连接: ${config.server.allowAiConnectionWrites ? "已开启" : "关闭（默认）"}`);
 
   const names = Object.keys(config.connections);
   if (names.length === 0) {
@@ -395,5 +469,10 @@ export function summarizeConfig(config: LoadedConfig): string[] {
   }
 
   lines.push(`限制: maxRows=${config.limits.maxRows}, timeoutMs=${config.limits.timeoutMs}`);
+  lines.push(
+    `结果处理: maxCellWidth=${config.limits.maxCellWidth}, ` +
+      `auto 落文件阈值 >${config.limits.inlineMaxBytes} 字节 或 >${config.limits.inlineMaxRows} 行, ` +
+      `导出保留 ${config.limits.exportTtlHours}h / 最多 ${config.limits.exportMaxFiles} 个`,
+  );
   return lines;
 }

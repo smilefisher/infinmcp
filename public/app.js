@@ -7,6 +7,7 @@ const state = {
   connections: [],
   tools: [],
   limits: null,
+  settings: null,
   version: "",
   logs: [],
   testResults: new Map(),
@@ -102,6 +103,7 @@ async function bootstrap() {
     state.connections = info.connections ?? [];
     state.tools = info.tools ?? [];
     state.limits = info.limits ?? null;
+    state.settings = info.settings ?? null;
     state.version = info.version ?? "";
     $("version").textContent = state.version ? `v${state.version}` : "";
   } catch (error) {
@@ -213,11 +215,24 @@ document.addEventListener("click", (event) => {
 // ---------------------------------------------------------------------------
 function renderConnections() {
   $("limits").textContent = state.limits
-    ? `行数上限 maxRows=${state.limits.maxRows}，超时 timeoutMs=${state.limits.timeoutMs}ms`
+    ? `行数上限 maxRows=${state.limits.maxRows}，单元格 maxCellWidth=${state.limits.maxCellWidth}，` +
+      `超时 timeoutMs=${state.limits.timeoutMs}ms，导出保留 ${state.limits.exportTtlHours}h / 最多 ${state.limits.exportMaxFiles} 个`
     : "";
   const canEdit = isAdmin();
   $("btn-new-conn").hidden = !canEdit;
   $("conn-readonly").hidden = canEdit;
+
+  // AI 管理连接开关：仅 admin 可见 / 可操作
+  const aiBox = $("ai-write-box");
+  if (aiBox) {
+    aiBox.hidden = !canEdit;
+    $("ai-write-hint").hidden = !canEdit;
+    if (canEdit && state.settings) {
+      const enabled = Boolean(state.settings.allowAiConnectionWrites);
+      $("ai-write-toggle").checked = enabled;
+      $("ai-write-state").textContent = enabled ? "已开启" : "已关闭（默认）";
+    }
+  }
 
   const list = $("conn-list");
   if (state.connections.length === 0) {
@@ -248,9 +263,25 @@ function renderConnections() {
              <button type="button" class="danger" data-action="delete" data-name="${esc(conn.name)}">删除</button>
            </div>`
         : "";
+      const tags = [];
+      if (conn.env) {
+        tags.push(`<span class="pill ${conn.env === "prod" ? "err" : "ok"}">${esc(conn.env)}</span>`);
+      }
+      if (conn.readonly !== undefined) {
+        tags.push(
+          conn.readonly
+            ? '<span class="pill ok">只读</span>'
+            : '<span class="pill err">可能可写</span>',
+        );
+      }
+      if (conn.maxRowsOverride !== undefined) {
+        tags.push(`<span class="pill">≤${esc(conn.maxRowsOverride)} 行</span>`);
+      }
+      const tagsCell = tags.length > 0 ? tags.join(" ") : '<span class="muted small">—</span>';
       return `<tr>
         <td class="mono nowrap">${esc(conn.name)}</td>
         <td class="nowrap"><span class="pill">${esc(conn.type)}</span></td>
+        <td class="nowrap">${tagsCell}</td>
         <td>${target}${user}</td>
         <td class="nowrap">${secret}</td>
         <td class="nowrap">${testCell}</td>
@@ -260,7 +291,7 @@ function renderConnections() {
     .join("");
 
   list.innerHTML = `<table>
-    <thead><tr><th>名称</th><th>类型</th><th>地址</th><th>口令</th><th>连通性</th><th>操作</th></tr></thead>
+    <thead><tr><th>名称</th><th>类型</th><th>标签</th><th>地址</th><th>口令</th><th>连通性</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -274,6 +305,25 @@ $("conn-list").addEventListener("click", async (event) => {
   if (action === "delete") await removeConnection(name);
   if (action === "test") await testConnection(name);
 });
+
+// AI 管理连接开关（admin）
+const aiToggle = $("ai-write-toggle");
+if (aiToggle) {
+  aiToggle.addEventListener("change", async () => {
+    const wanted = aiToggle.checked;
+    aiToggle.disabled = true;
+    try {
+      const res = await api("/api/settings", { method: "PUT", body: { allowAiConnectionWrites: wanted } });
+      state.settings = res.settings ?? { allowAiConnectionWrites: wanted };
+    } catch (error) {
+      window.alert(`保存「允许 AI 管理连接」失败：${error.message}`);
+      aiToggle.checked = !wanted;
+    } finally {
+      aiToggle.disabled = false;
+      renderConnections();
+    }
+  });
+}
 
 async function testConnection(name) {
   const button = document.querySelector(`button[data-action="test"][data-name="${CSS.escape(name)}"]`);
@@ -334,6 +384,7 @@ function openCreate() {
   resetForm();
   $("conn-dialog-title").textContent = "新增连接";
   $("cf-name").disabled = false;
+  $("cf-name-note").hidden = true;
   $("cf-type").disabled = false;
   setKeepHintVisible(false);
   dialog.dataset.mode = "create";
@@ -347,7 +398,14 @@ function openEdit(name) {
   resetForm();
   $("conn-dialog-title").textContent = `编辑连接 ${name}`;
   $("cf-name").value = name;
-  $("cf-name").disabled = true;
+  // 仅存在于配置文件的连接不能在这里改名（否则旧名会在重启后复活）。
+  $("cf-name").disabled = Boolean(conn.static);
+  const nameNote = $("cf-name-note");
+  nameNote.hidden = !conn.static;
+  nameNote.textContent = conn.static ? "该连接来自配置文件，不能在这里改名；请修改配置文件后重启服务。" : "";
+  $("cf-env").value = conn.env ?? "";
+  $("cf-readonly").value = conn.readonly === undefined ? "" : String(conn.readonly);
+  $("cf-maxrows").value = conn.maxRowsOverride ?? "";
   $("cf-type").value = conn.type;
   $("cf-type").disabled = true;
   setKeepHintVisible(true);
@@ -393,9 +451,18 @@ function strOrUndefined(value) {
 
 function buildPayload() {
   const type = $("cf-type").value;
+  const env = $("cf-env").value;
+  const readonly = $("cf-readonly").value;
+  const maxRows = numOrUndefined($("cf-maxrows").value);
+  const meta = {
+    ...(env ? { env } : {}),
+    ...(readonly === "" ? {} : { readonly: readonly === "true" }),
+    ...(maxRows === undefined ? {} : { maxRows }),
+  };
   if (type === "mysql") {
     return {
       type,
+      ...meta,
       host: strOrUndefined($("cf-mysql-host").value),
       port: numOrUndefined($("cf-mysql-port").value),
       user: strOrUndefined($("cf-mysql-user").value),
@@ -407,6 +474,7 @@ function buildPayload() {
   if (type === "doris") {
     return {
       type,
+      ...meta,
       host: strOrUndefined($("cf-doris-host").value),
       port: numOrUndefined($("cf-doris-port").value),
       user: strOrUndefined($("cf-doris-user").value),
@@ -419,6 +487,7 @@ function buildPayload() {
     const tls = $("cf-redis-tls").value;
     return {
       type,
+      ...meta,
       host: strOrUndefined($("cf-redis-host").value),
       port: numOrUndefined($("cf-redis-port").value),
       username: strOrUndefined($("cf-redis-username").value),
@@ -429,6 +498,7 @@ function buildPayload() {
   }
   return {
     type,
+    ...meta,
     uri: strOrUndefined($("cf-mongo-uri").value),
     database: strOrUndefined($("cf-mongo-db").value),
   };
@@ -436,7 +506,8 @@ function buildPayload() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const name = dialog.dataset.mode === "edit" ? dialog.dataset.name : $("cf-name").value.trim();
+  const originalName = dialog.dataset.mode === "edit" ? dialog.dataset.name : "";
+  const name = $("cf-name").value.trim();
   const errorBox = $("conn-error");
   errorBox.hidden = true;
 
@@ -447,12 +518,15 @@ form.addEventListener("submit", async (event) => {
   }
 
   const payload = buildPayload();
+  payload.name = name;
   for (const key of Object.keys(payload)) {
     if (payload[key] === undefined) delete payload[key];
   }
 
   try {
-    await api(`/api/connections/${encodeURIComponent(name)}`, { method: "PUT", body: payload });
+    // 编辑时 URL 用旧名，body.name 带新名：服务端据此判断是否重命名。
+    const urlName = originalName || name;
+    await api(`/api/connections/${encodeURIComponent(urlName)}`, { method: "PUT", body: payload });
     dialog.close();
     await bootstrap();
   } catch (error) {

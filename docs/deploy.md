@@ -52,7 +52,15 @@ MONGO_URI=mongodb://readonly:...@10.0.0.13:27017/?authSource=admin
   "connections": {
     "main": { "type": "mysql", "host": "10.0.0.11", "user": "readonly", "password": "{env:MYSQL_PW}", "database": "app" }
   },
-  "limits": { "maxRows": 200, "timeoutMs": 10000 },
+  "limits": {
+    "maxRows": 200,
+    "timeoutMs": 10000,
+    "maxCellWidth": 512,
+    "inlineMaxBytes": 262144,
+    "inlineMaxRows": 1000,
+    "exportTtlHours": 24,
+    "exportMaxFiles": 200
+  },
   "logs": { "file": "/var/lib/infinmcp/logs.jsonl" }
 }
 ```
@@ -187,6 +195,8 @@ sudo systemctl restart infinmcp
 ```
 
 连接配置存在数据目录（`connections.json`，权限 `0600`），升级不覆盖。
+运行时设置（目前只有「允许 AI 管理连接」开关）存在 `<data-dir>/settings.json`（权限 `0600`），同样不覆盖。
+大结果导出写在 `<data-dir>/exports/`（目录 `0700`、文件 `0600`），按 `limits.exportTtlHours` / `limits.exportMaxFiles` 自动清理。
 
 ## 10. 数据库侧再加一道锁（强烈建议）
 
@@ -216,6 +226,8 @@ db.createUser({ user: "readonly", pwd: "<pw>", roles: [{ role: "read", db: "app"
 - [ ] 每人一个 Key，用 `openssl rand -hex 32` 生成，不用可预测字符串
 - [ ] `.env` 不入库、权限 `600`；配置文件里只写 `{env:...}`
 - [ ] `connections.json` 权限 `0600`（程序自动设置）
+- [ ] 不需要让 AI 自己加连接时，保持 `allowAiConnectionWrites` 关闭（默认关闭）；
+      开启会带来内网探测（SSRF）风险，且口令会进入 AI 对话记录
 - [ ] 只在内网 / 测试环境暴露；对外必须走 HTTPS
 - [ ] 数据库侧使用只读账号
 - [ ] 不要把 Key 放进 URL 查询参数（本服务也不接受这种传法）

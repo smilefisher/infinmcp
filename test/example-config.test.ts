@@ -49,5 +49,18 @@ describe("入库的示例配置", () => {
     expect(config.server.apiKeys.length).toBeGreaterThanOrEqual(2);
     expect(Object.keys(config.connections).sort()).toEqual(["cache", "docs", "main", "warehouse"]);
     expect(config.connections.warehouse.type).toBe("doris");
+    expect(config.connections.main).toMatchObject({ env: "prod", readonly: true });
+    expect(config.connections.warehouse).toMatchObject({ env: "test", readonly: true, maxRows: 100 });
+  });
+
+  it("limits 的输出相关字段有默认值", () => {
+    const config = load("local-test.config.example.json");
+    expect(config.limits).toMatchObject({
+      maxCellWidth: 512,
+      inlineMaxBytes: 262144,
+      inlineMaxRows: 1000,
+      exportTtlHours: 24,
+      exportMaxFiles: 200,
+    });
   });
 });

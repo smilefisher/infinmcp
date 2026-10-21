@@ -11,6 +11,7 @@
 | 方式 | 谁能改 | 何时生效 | 存在哪 |
 | --- | --- | --- | --- |
 | **Web 页面**「连接」页 | `admin` | **立即**（热生效，无需重启） | `<data-dir>/connections.json`（权限 `0600`） |
+| **MCP 工具**（AI：`create/update/delete_connection`） | 需先在「连接」页开启「允许 AI 管理连接」（默认关闭，见第 11 节） | **立即**（热生效） | `<data-dir>/connections.json`（权限 `0600`） |
 | **配置文件** `infinmcp.config.json` 的 `connections` | 运维 / 有机器权限的人 | 启动时读取；**改完需重启** | 配置文件本身 |
 
 优先级：**同名连接以 `connections.json` 为准**（加载时会提示一条 warning）。
@@ -23,9 +24,31 @@
 
 ## 2. 公共约定
 
-- **连接名**：在配置文件里是 `connections` 对象的键；Web 表单限制为 `^[A-Za-z0-9_.-]{1,64}$`。建议用 `main` / `cache` / `docs` 这类短名。
+- **连接名**：在配置文件里是 `connections` 对象的键；支持中文 / 字母 / 数字 / 空格 / 下划线 / 点 / 连字符，长度 1–64，且不能以空格开头或结尾、不能包含连续空格（Web 与服务端同一套校验）。Web 编辑时可以直接改名（例如改成「测试环境mysql」），旧名立即失效；新名不能与现有连接冲突。
 - **`type`**：必填，`mysql` / `doris` / `redis` / `mongodb` 四选一。
 - 每个连接都会被服务端**强制只读**，与账号权限无关（见第 6 节）。
+
+### 可选标签（只做展示，不参与路由 / 放行）
+
+| 字段 | 取值 | 说明 |
+| --- | --- | --- |
+| `env` | `prod` / `test` / `dev` | 环境标签。只随 `list_connections` 返回，服务端**不会**据此切换环境或选择连接 |
+| `readonly` | `true` / `false` | 数据库账号是否只读。`false` 表示账号可能有写权限（高危提示）；不填 = 未标注 |
+| `maxRows` | 正整数 | 该连接的行数上限，只能**调低**全局 `limits.maxRows`；实际生效 `min(本连接 maxRows, limits.maxRows)` |
+
+```jsonc
+"main": {
+  "type": "mysql",
+  "host": "10.0.0.11",
+  "user": "readonly",
+  "database": "app",
+  "env": "prod",
+  "readonly": true,
+  "maxRows": 100
+}
+```
+
+> 标签不会改变只读守卫：即使 `env: "test"` 或 `readonly: false`，写操作照样被拒。
 
 ---
 
@@ -93,6 +116,10 @@ GRANT SELECT_PRIV ON app.* TO 'readonly';
 ```
 
 > 注意：Doris 的库 / 表 / 列结构同样来自 `information_schema`，因此上面的账号即可支撑 `doris_schema`。
+
+**批量查询**：`mysql_batch_query` / `doris_batch_query` 一次可跑 1–20 条只读 SQL，
+用 `queries: [{ name, sql }]` 传入；每条结果按 `name` 分段返回，单条被拒或执行失败都不会中断其他条目。
+多条 SQL 在同一连接上**顺序执行**，不开启事务。
 
 ---
 
@@ -202,10 +229,22 @@ db.createUser({
 
 ```jsonc
 "limits": {
-  "maxRows": 200,      // 单次返回的最大行数/文档数，超出会标注「已截断」
-  "timeoutMs": 10000   // 既作查询超时，也作连接超时
+  "maxRows": 200,          // 单次返回的最大行数/文档数，超出会标注「已截断」
+  "timeoutMs": 10000,      // 既作查询超时，也作连接超时
+  "maxCellWidth": 512,     // 单元格最大字符数，超出截断并标注「已截断」
+  "inlineMaxBytes": 262144,// output=auto：结果估算超过该字节数时落文件
+  "inlineMaxRows": 1000,   // output=auto：结果行数超过该值时落文件
+  "exportTtlHours": 24,    // 导出文件保留小时数
+  "exportMaxFiles": 200    // 导出目录最多保留文件数
 }
 ```
+
+- **行数**：实际生效 `min(连接.maxRows, limits.maxRows)`。连接级 `maxRows` 只能调低，不能突破全局值。
+- **单元格**：单值默认最多 512 字符；查询工具可用 `max_cell_width` 单独覆盖（16–65536）。
+- **落文件**：`output: "auto"` / `"file"` 时写入 `<data-dir>/exports/`，文件保留完整值（不按 `max_cell_width` 截断），
+  只把前 20 行预览放进上下文。HTTP 模式返回 `downloadUrl`（`GET /api/exports/<file>`，需要有效 API Key），
+  stdio 模式返回服务端绝对路径 `downloadPath`。导出目录权限 `0700`、文件 `0600`。
+- **列裁剪**：SQL / Mongo 行结果可用 `columns` 只保留指定列；Mongo 的 `columns` 只作用于顶层字段，嵌套字段请用 `projection`。
 
 ## 8. 验证连接
 
@@ -232,6 +271,8 @@ db.createUser({
 | `mysql_schema` 查表结构报「需要指定 database」 | MySQL 连接没配 `database`，且调用时没传 |
 | 结果是 `⌐`/乱码 | MySQL `charset` 建议 `utf8mb4` |
 | 结果被截断 | 命中 `limits.maxRows`，缩小查询范围或调高上限 |
+| 某个字段显示「已截断」 | 命中 `limits.maxCellWidth`（默认 512 字符），用 `max_cell_width` 调大，或 `output: "file"` 导出完整值 |
+| 查不到导出文件 | 文件在 `<data-dir>/exports/`，按 `exportTtlHours` / `exportMaxFiles` 自动清理；下载需带有效 API Key |
 | 中文库名/表名查不到 | 用反引号并确认 `charset` |
 | Web 编辑后口令丢了 | 口令留空=沿用旧值；要清空口令是**不支持**的，请改配置文件 |
 
@@ -253,3 +294,35 @@ ACL SETUSER infinmcp on ><pw> ~* -@write -@dangerous -@admin -@scripting
 > 用 `+@read` 会导致莫名其妙的 `NOPERM`。用 `-@write -@dangerous` 更稳。
 
 更完整的部署侧加固见 [`deploy.md`](deploy.md#10-数据库侧再加一道锁强烈建议)。
+
+---
+
+## 11. 让 AI 管理连接（可选，默认关闭）
+
+默认只有 `admin` 能在 Web「连接」页增删改连接。如果希望 **MCP 客户端（AI）自己加连接**，需要显式打开一个开关：
+
+| 方式 | 操作 | 生效 |
+| --- | --- | --- |
+| Web 页面 | 「连接」页勾选**「允许 AI 管理连接（新增 / 更新 / 删除）」** | **立即**（写入 `<data-dir>/settings.json`） |
+| 配置文件 | `server.allowAiConnectionWrites: true` | 启动时读取；改完需重启 |
+
+优先级：**`settings.json` 覆盖配置文件默认值**（与 `connections.json` 覆盖 `connections` 一致）。默认 `false`。
+
+打开后 AI 可调用：
+
+| 工具 | 作用 | 说明 |
+| --- | --- | --- |
+| `create_connection` | 新增连接 | 名称已存在会报错，提示改用 `update_connection` |
+| `update_connection` | 更新连接 | **部分更新**：只传要改的字段，未传的（含 `password` / `uri`）保持原值 |
+| `delete_connection` | 删除连接 | 只能删 `connections.json` 里的；不可逆 |
+| `test_connection` | 测试连通性 | **不需要开关**，只读探测 |
+
+AI 写入的仍然是同一份 `connections.json`，所以它建的连接与手动添加的**完全一样**，会立即出现在 Web 列表里。
+开关关闭时，三个写工具**仍然可见**（AI 知道有这能力），但调用会返回「管理员未开启」。
+
+> ⚠️ 开启前请权衡：
+> 1. **内网探测（SSRF）**：服务端会按 AI 给的地址发起连接，可用于探测内网端口/服务。
+> 2. **口令进入对话**：AI 必然要把口令发到会话里，会落在 AI 侧记录中——尽量用只读账号。
+> 3. 这不是数据库写权限问题（查询仍强制只读），但会让 AI 具备改连接配置的能力。
+>
+> 结论：只在受信任的客户端、受控网络下临时开启；不用时关掉。

@@ -18,24 +18,60 @@
 - [x] 第 7 步：Web 页面（连接管理、调用日志实时刷新、**使用说明**、连通性测试）
 - [x] 第 8–9 步：运行/部署说明（[`docs/deploy.md`](docs/deploy.md)）与收尾
 - [x] 补充：Doris 只读支持（`type: "doris"` + `doris_query` / `doris_schema`，复用 MySQL 协议驱动）
+- [x] 补充：AI 连接管理（`create_connection` / `update_connection` / `delete_connection` / `test_connection`；受后台开关控制，默认关闭）
+- [x] 补充：连接标签（`env` / `readonly` / `maxRows`）与 Web 端连接重命名（支持中文，如「测试环境mysql」）
+- [x] 补充：结果处理（长文本/长 JSON 截断、`columns` 列裁剪、大结果自动导出 CSV / JSONL 并返回下载地址）
+- [x] 补充：命名批量只读查询（`mysql_batch_query` / `doris_batch_query`，一次调用多条 SQL，逐条返回）
 
-> ⚠️ 尚未在**真实** MySQL / Doris / Redis / MongoDB 实例上联调（缺少可连实例）。单元测试与 stdio / HTTP 端到端均已通过；真实实例联调见下方「测试」一节的 `INFINMCP_TEST_*`。
+> 已用真实 MySQL / Doris / Redis / MongoDB 实例做过手工只读验证。自动化集成测试默认跳过，指定实例后见下方「测试」一节的 `INFINMCP_TEST_*`。
 
 ## 已实现的工具
 
 | 工具 | 说明 |
 | --- | --- |
-| `list_connections` | 列出可用连接（脱敏） |
-| `mysql_query` | 只读 SQL（仅单条 SELECT/SHOW/EXPLAIN/DESC/WITH；禁多语句与写操作） |
+| `list_connections` | 列出可用连接（脱敏），并显示可选标签 `env` / `readonly` / `maxRows` |
+| `mysql_query` | 只读 SQL（仅单条 SELECT/SHOW/EXPLAIN/DESC/WITH；禁多语句与写操作）；支持 `columns` / `max_cell_width` / `output` / `format` |
+| `mysql_batch_query` | MySQL 批量只读 SQL（1–20 条，按 `name` 分段返回；单条失败不中断） |
 | `mysql_schema` | 查看库 / 表 / 列 / 索引 |
-| `doris_query` | Doris 只读 SQL（Doris 与 MySQL 协议兼容，规则同 `mysql_query`） |
+| `doris_query` | Doris 只读 SQL（Doris 与 MySQL 协议兼容，规则同 `mysql_query`）；输出参数同上 |
+| `doris_batch_query` | Doris 批量只读 SQL（规则同 `mysql_batch_query`） |
 | `doris_schema` | 查看 Doris 库 / 表 / 列 / 索引 |
-| `redis_exec` | Redis 只读命令（白名单；禁写命令与阻塞命令） |
-| `redis_scan` | 基于 SCAN 的 key 扫描（替代 KEYS） |
-| `mongo_find` | MongoDB 只读查询（filter / projection / sort / skip / limit；禁 `$where`） |
-| `mongo_aggregate` | 只读聚合管道（禁 `$out` / `$merge` 与 `$where` / `$function` / `$accumulator`） |
+| `redis_exec` | Redis 只读命令（白名单；禁写命令与阻塞命令）；支持 `max_cell_width` / `output` / `format` |
+| `redis_scan` | 基于 SCAN 的 key 扫描（替代 KEYS）；输出参数同上 |
+| `mongo_find` | MongoDB 只读查询（filter / projection / sort / skip / limit；禁 `$where`）；支持 `columns` / `max_cell_width` / `output` / `format` |
+| `mongo_aggregate` | 只读聚合管道（禁 `$out` / `$merge` 与 `$where` / `$function` / `$accumulator`）；输出参数同上 |
 | `mongo_list_collections` | 列出集合；无默认库时列出所有数据库 |
 | `mongo_schema` | 采样文档推断字段路径与 BSON 类型 |
+| `create_connection` | 新增数据库连接并立即生效（需管理员在 Web 控制台开启「允许 AI 管理连接」） |
+| `update_connection` | 更新连接（部分更新：只传要改的字段，未传的保持原值；省略 `password` / `uri` 也沿用旧值） |
+| `delete_connection` | 删除连接（不可逆；仅限 `connections.json` 中的连接） |
+| `test_connection` | 测试连接连通性（只读探测，不需要开关） |
+
+### 批量查询与结果处理
+
+**批量查询**：`mysql_batch_query` / `doris_batch_query` 一次可跑 1–20 条只读 SQL，
+每条用 `name` 命名（缺省 `q1..qN`），结果按名字分段返回；单条失败不影响其他条目。
+每条还支持 `params` / `limit` / `columns` / `output` / `format`。
+
+```jsonc
+{
+  "connection": "main",
+  "queries": [
+    { "name": "count", "sql": "SELECT COUNT(*) AS n FROM users" },
+    { "name": "recent", "sql": "SELECT id, name FROM users ORDER BY id DESC LIMIT 5" }
+  ]
+}
+```
+
+**结果处理**（对 SQL / Redis / Mongo 查询工具通用）：
+
+- `max_cell_width`：单值最大字符数，默认取 `limits.maxCellWidth`（512）；超出部分截断并标注「已截断」。
+- `columns`：只保留指定列（SQL / Mongo 行结果；Mongo 只作用于顶层字段，嵌套字段用 `projection`）。
+- `output`：`auto`（默认，超过阈值自动落文件）/ `inline`（始终直接返回）/ `file`（始终落文件）。
+- `format`：落文件时的格式，`jsonl`（默认）或 `csv`。
+- 落文件时**文件里保留完整值**，只有直接返回和预览按 `max_cell_width` 截断；`structuredContent` 只带前 20 行/项预览。
+- HTTP 模式返回 `downloadUrl`（`GET /api/exports/<file>`）；stdio 模式返回 `downloadPath` 与服务端绝对路径。
+- 导出文件在 `<data-dir>/exports/`，目录 `0700`、文件 `0600`，按 `limits.exportTtlHours` / `limits.exportMaxFiles` 清理。
 
 ## 测试
 
@@ -65,7 +101,7 @@ cp local-test.config.example.json local-test.config.json
 # 2) 起服务（127.0.0.1:8787）
 node dist/index.js serve -c local-test.config.json -d ~/.config/infinmcp-local
 
-# 3) 另开一个终端跑自测（30 项检查）
+# 3) 另开一个终端跑自测（50+ 项检查）
 node scripts/local-check.mjs
 ```
 
@@ -151,8 +187,11 @@ node dist/index.js serve -c infinmcp.config.json      # 需至少配置一个 AP
 | `PUT /api/connections/<name>` | **admin** | 新增 / 更新连接（落盘并热生效） |
 | `DELETE /api/connections/<name>` | **admin** | 删除连接 |
 | `POST /api/connections/<name>/test` | **admin** | 测试连通性（MySQL / Doris `SELECT 1` / Redis `PING` / Mongo `ping`） |
+| `GET /api/settings` | 需要 | 运行时设置（当前只有「允许 AI 管理连接」开关） |
+| `PUT /api/settings` | **admin** | 修改运行时设置（落盘 `settings.json` 并热生效） |
 | `GET /api/logs?limit=200` | 需要 | 最近的调用日志 |
 | `GET /api/logs/stream` | 需要 | 调用日志 SSE 实时推送 |
+| `GET /api/exports/<file>` | 需要 | 下载大结果导出文件（仅 `.jsonl` / `.csv`；任意有效 Key） |
 | `GET /` | 不需要 | Web 页面（`public/`） |
 
 鉴权：`Authorization: Bearer <API Key>` 或 `X-API-Key: <API Key>`。
@@ -255,21 +294,25 @@ opencode mcp add infinmcp --global --url http://<测试机>:8787/mcp \
 
 | 类型 | 字段（必填加 *） |
 | --- | --- |
-| `mysql` | *`host` · `port`(3306) · *`user` · `password` · `database`(默认库) · `charset`(建议 `utf8mb4`) |
-| `doris` | *`host` · `port`(9030) · *`user` · `password` · `database`(默认库) · `charset`(建议 `utf8mb4`) |
-| `redis` | *`host` · `port`(6379) · `username`(ACL) · `password` · `db`(0) · `tls` |
-| `mongodb` | *`uri`(含账号口令，如 `mongodb://u:p@h:27017/app?authSource=admin`) · `database`(默认库) |
+| `mysql` | *`host` · `port`(3306) · *`user` · `password` · `database`(默认库) · `charset`(建议 `utf8mb4`) · 可选标签 `env` / `readonly` / `maxRows` |
+| `doris` | *`host` · `port`(9030) · *`user` · `password` · `database`(默认库) · `charset`(建议 `utf8mb4`) · 可选标签 `env` / `readonly` / `maxRows` |
+| `redis` | *`host` · `port`(6379) · `username`(ACL) · `password` · `db`(0) · `tls` · 可选标签 `env` / `readonly` / `maxRows` |
+| `mongodb` | *`uri`(含账号口令，如 `mongodb://u:p@h:27017/app?authSource=admin`) · `database`(默认库) · 可选标签 `env` / `readonly` / `maxRows` |
+
+连接标签都是**可选元数据**：`env` 只能是 `prod` / `test` / `dev`；`readonly` 表示数据库账号是否只读（`false` = 可能有写权限）；`maxRows` 只能把该连接的行数上限调到全局值以下，实际生效 `min(连接 maxRows, limits.maxRows)`。服务端不会按 `env` 路由，也不会因 `readonly` 放行或拦截任何操作。
 
 ```jsonc
 "connections": {
-  "main":      { "type": "mysql",   "host": "10.0.0.11", "user": "readonly", "password": "{env:MYSQL_PW}", "database": "app", "charset": "utf8mb4" },
-  "warehouse": { "type": "doris",   "host": "10.0.0.14", "port": 9030, "user": "readonly", "password": "{env:DORIS_PW}", "database": "app" },
-  "cache":     { "type": "redis",   "host": "10.0.0.12", "password": "{env:REDIS_PW}", "db": 0 },
-  "docs":      { "type": "mongodb", "uri": "{env:MONGO_URI}", "database": "app" }
+  "main":      { "type": "mysql",   "host": "10.0.0.11", "user": "readonly", "password": "{env:MYSQL_PW}", "database": "app", "charset": "utf8mb4", "env": "prod", "readonly": true },
+  "warehouse": { "type": "doris",   "host": "10.0.0.14", "port": 9030, "user": "readonly", "password": "{env:DORIS_PW}", "database": "app", "env": "test", "readonly": true, "maxRows": 100 },
+  "cache":     { "type": "redis",   "host": "10.0.0.12", "password": "{env:REDIS_PW}", "db": 0, "env": "dev" },
+  "docs":      { "type": "mongodb", "uri": "{env:MONGO_URI}", "database": "app", "env": "dev" }
 }
 ```
 
-全局限制：`limits.maxRows`（默认 200，超出标注「已截断」）、`limits.timeoutMs`（默认 10000，同时作连接超时）。
+全局限制：`limits.maxRows`（默认 200，超出标注「已截断」）、`limits.timeoutMs`（默认 10000，同时作连接超时）、
+`limits.maxCellWidth`（默认 512，单元格截断长度）、`limits.inlineMaxBytes`（默认 262144）、`limits.inlineMaxRows`（默认 1000，
+两者决定 `output: "auto"` 何时落文件）、`limits.exportTtlHours`（默认 24）、`limits.exportMaxFiles`（默认 200）。
 
 字段含义、只读账号怎么建、常见坑：**[docs/connections.md](docs/connections.md)**。
 
@@ -277,14 +320,32 @@ opencode mcp add infinmcp --global --url http://<测试机>:8787/mcp \
 
 `PUT /api/connections/<name>` 会写入 `<data-dir>/connections.json`（权限 `0600`）并立即生效，无需重启。
 省略 `password`（MySQL / Redis）或 `uri`（MongoDB）表示「沿用旧值」，前端无需回填密钥。
-仅单进程 `serve` 模式下即时生效。
+请求 body 里的 `name` 与路径不同即**重命名**（支持中文，如「测试环境mysql」；新名冲突返回 `409`，
+来自配置文件的连接不允许改名）。改名请求需带完整连接字段；仅单进程 `serve` 模式下即时生效。
+
+### AI 管理连接（默认关闭）
+
+除了管理员在 Web 页操作，**MCP 客户端也可以增删改连接**，但默认<u>不允许</u>：
+
+- 开关：`server.allowAiConnectionWrites`（配置文件默认值，`false`）。
+  管理员可在 Web「连接」页勾选「允许 AI 管理连接」实时开启 / 关闭，
+  该状态写入 `<data-dir>/settings.json`（`0600`）并**热生效**，优先级高于配置文件默认值。
+- 开启后，AI 可调用 `create_connection` / `update_connection` / `delete_connection`；
+  写入的仍然是同一份 `connections.json`，所以 AI 建的连接与手动添加的**完全一致**，立即出现在 Web 列表里。
+- 关闭时这三个工具仍可见（AI 知道有这能力），但调用会返回「管理员未开启」；
+  查询工具与 `test_connection` 不受影响。
+- `delete_connection` 只能删 `connections.json` 里的连接；来自配置文件的连接需改配置文件重启。
+
+> ⚠️ 安全提醒：开启后服务端会按 AI 给的地址发起连接，存在**内网探测（SSRF）**风险；
+> 且口令会出现在 AI 对话记录里。请只在受信任的客户端下开启，并尽量使用只读账号。
+> 默认关闭正是为了这个。
 
 ## Web 页面
 
 浏览器打开 `http://<host>:<port>/`（静态资源在 `public/`，无构建步骤）。三个 Tab：
 
-- **使用说明**（无需登录即可看）：这是什么、如何拿 API Key、如何把 MCP 客户端接进来（OpenCode / 通用 JSON / 本地 stdio）、11 个工具的用法与调用示例、只读边界、连接管理与常见问题。
-- **连接**：连接列表 + 连通性测试；`admin` 可新增 / 编辑 / 删除。编辑时口令 / URI 留空即沿用旧值；保存后立即生效。
+- **使用说明**（无需登录即可看）：这是什么、如何拿 API Key、如何把 MCP 客户端接进来（OpenCode / 通用 JSON / 本地 stdio）、17 个工具的用法与调用示例、只读边界、连接管理与常见问题。
+- **连接**：连接列表 + 连通性测试；`admin` 可新增 / 编辑 / 删除 / 重命名（支持中文），并可勾选「允许 AI 管理连接」让 MCP 客户端自己增删改（默认关闭）。编辑时口令 / URI 留空即沿用旧值；保存后立即生效。
 - **日志**：时间 / 用户 / 工具 / 连接 / 耗时 / 行数 / 状态，支持按用户、工具、连接、状态筛选，SSE 实时刷新（可开关）。
 
 首次访问填入 API Key，之后记在浏览器 `localStorage`，随时可「清除 Key」。
@@ -312,7 +373,8 @@ node dist/index.js serve -c infinmcp.config.json -d ~/.config/infinmcp
     "port": 8787,
     "apiKeys": [
       { "name": "chenning", "key": "{env:KEY_CHENNING}", "role": "admin" }
-    ]
+    ],
+    "allowAiConnectionWrites": false
   },
   "connections": {
     "main": { "type": "mysql", "host": "10.0.0.11", "user": "readonly", "database": "app" },
@@ -320,7 +382,15 @@ node dist/index.js serve -c infinmcp.config.json -d ~/.config/infinmcp
     "cache": { "type": "redis", "host": "10.0.0.12", "port": 6379, "db": 0 },
     "docs": { "type": "mongodb", "uri": "{env:MONGO_URI}", "database": "app" }
   },
-  "limits": { "maxRows": 200, "timeoutMs": 10000 },
+  "limits": {
+    "maxRows": 200,
+    "timeoutMs": 10000,
+    "maxCellWidth": 512,
+    "inlineMaxBytes": 262144,
+    "inlineMaxRows": 1000,
+    "exportTtlHours": 24,
+    "exportMaxFiles": 200
+  },
   "logs": { "file": "~/.infinmcp/logs.jsonl" }
 }
 ```

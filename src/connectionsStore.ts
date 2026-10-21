@@ -12,15 +12,21 @@ export class ConnectionStoreError extends Error {
   }
 }
 
-/** 连接名规则：字母 / 数字 / 下划线 / 点 / 连字符，最长 64。 */
-const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+/**
+ * 连接名规则：中文 / 字母 / 数字 / 空格 / 下划线 / 点 / 连字符，最长 64。
+ * 允许中文是为了让连接名本身能带业务可读的标签（例如「测试环境mysql」）。
+ */
+const NAME_RE = /^[\p{L}\p{N}_.\- ]{1,64}$/u;
 
 export function assertValidConnectionName(name: string): void {
-  if (!NAME_RE.test(name)) {
+  const invalid = (): never => {
     throw new ConnectionStoreError(
-      `连接名不合法: "${name}"（仅允许字母 / 数字 / 下划线 / 点 / 连字符，长度 1–64）`,
+      `连接名不合法: "${name}"（允许中文 / 字母 / 数字 / 空格 / 下划线 / 点 / 连字符，长度 1–64，` +
+        "且不能以空格开头或结尾）",
     );
-  }
+  };
+  if (!NAME_RE.test(name)) invalid();
+  if (name !== name.trim() || / {2,}/.test(name)) invalid();
 }
 
 export function connectionsFilePath(dataDir: string): string {
@@ -126,6 +132,24 @@ export function deleteConnection(dataDir: string, name: string): boolean {
   const connections = readConnections(dataDir);
   if (!Object.prototype.hasOwnProperty.call(connections, name)) return false;
   delete connections[name];
+  writeConnections(dataDir, connections);
+  return true;
+}
+
+/**
+ * 重命名 connections.json 里的连接（原子写入：新键 + 删旧键）。
+ * 返回是否确有重命名：旧连接不在数据目录（只存在于配置文件）时返回 false。
+ */
+export function renameConnection(dataDir: string, oldName: string, newName: string): boolean {
+  assertValidConnectionName(newName);
+  if (oldName === newName) return false;
+  const connections = readConnections(dataDir);
+  if (!Object.prototype.hasOwnProperty.call(connections, oldName)) return false;
+  if (Object.prototype.hasOwnProperty.call(connections, newName)) {
+    throw new ConnectionStoreError(`连接 "${newName}" 已存在，无法重命名`);
+  }
+  connections[newName] = connections[oldName]!;
+  delete connections[oldName];
   writeConnections(dataDir, connections);
   return true;
 }

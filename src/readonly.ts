@@ -212,6 +212,20 @@ export function effectiveRowLimit(requested: number | undefined, maxRows: number
   return Math.min(requested, maxRows);
 }
 
+/**
+ * 计算某次查询的实际行数上限：先取「连接级 maxRows 与全局 maxRows 的较小值」，再套用请求值。
+ * 连接级只能调低全局上限，不能突破。
+ */
+export function effectiveConnectionRowLimit(
+  requested: number | undefined,
+  connectionMaxRows: number | undefined,
+  globalMaxRows: number,
+): number {
+  const cap =
+    connectionMaxRows === undefined ? globalMaxRows : Math.min(connectionMaxRows, globalMaxRows);
+  return effectiveRowLimit(requested, cap);
+}
+
 // ---------------------------------------------------------------------------
 // Redis 只读命令白名单
 // ---------------------------------------------------------------------------

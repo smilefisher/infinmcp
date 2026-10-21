@@ -1,7 +1,14 @@
 import type { ToolDefinition } from "./types.js";
 import { listConnectionsTool } from "./meta.js";
+import {
+  createConnectionTool,
+  deleteConnectionTool,
+  testConnectionTool,
+  updateConnectionTool,
+} from "./connections.js";
 import { mysqlQueryTool, mysqlSchemaTool } from "./mysql.js";
 import { dorisQueryTool, dorisSchemaTool } from "./doris.js";
+import { dorisBatchQueryTool, mysqlBatchQueryTool } from "./sqlBatch.js";
 import { redisExecTool, redisScanTool } from "./redis.js";
 import {
   mongoAggregateTool,
@@ -14,8 +21,10 @@ import {
 export const toolDefinitions: ToolDefinition[] = [
   listConnectionsTool,
   mysqlQueryTool,
+  mysqlBatchQueryTool,
   mysqlSchemaTool,
   dorisQueryTool,
+  dorisBatchQueryTool,
   dorisSchemaTool,
   redisExecTool,
   redisScanTool,
@@ -23,6 +32,10 @@ export const toolDefinitions: ToolDefinition[] = [
   mongoAggregateTool,
   mongoListCollectionsTool,
   mongoSchemaTool,
+  createConnectionTool,
+  updateConnectionTool,
+  deleteConnectionTool,
+  testConnectionTool,
 ];
 
 export type { ToolDefinition, ToolResult, ToolContext } from "./types.js";

@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { ServerResponse } from "node:http";
+import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { dirname, extname, join, normalize, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, normalize, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { extractApiKey, KeyStore, type Principal } from "./auth.js";
@@ -10,13 +12,18 @@ import { testConnection } from "./connections/test.js";
 import {
   CONNECTIONS_FILE,
   ConnectionStoreError,
+  assertValidConnectionName,
   deleteConnection,
+  renameConnection,
   upsertConnection,
 } from "./connectionsStore.js";
 import { diag, type Logger } from "./logging.js";
+import { exportsDir } from "./output.js";
 import type { Runtime } from "./runtime.js";
 import { createMcpServer } from "./server.js";
+import { SettingsPatchSchema, updateSettings } from "./settingsStore.js";
 import { toolDefinitions } from "./tools/index.js";
+import type { ConnectionManageCapability } from "./tools/types.js";
 import { VERSION } from "./version.js";
 
 /** 请求体上限：1 MiB（MCP 请求与连接配置都远小于此）。 */
@@ -85,6 +92,18 @@ function authenticate(req: IncomingMessage, keys: KeyStore): Principal | null {
 // MCP 端点（无状态：每个请求一个 server + transport，身份来自 API Key）
 // ---------------------------------------------------------------------------
 
+/** 从请求头推导公开基地址（兼容反向代理的 x-forwarded-proto / x-forwarded-host）。 */
+function requestBaseUrl(req: IncomingMessage): string | undefined {
+  const protoHeader = req.headers["x-forwarded-proto"];
+  const proto =
+    (typeof protoHeader === "string" ? protoHeader.split(",")[0]!.trim() : "") || "http";
+  const hostHeader = req.headers["x-forwarded-host"];
+  const host =
+    (typeof hostHeader === "string" ? hostHeader.split(",")[0]!.trim() : "") ||
+    (typeof req.headers.host === "string" ? req.headers.host : "");
+  return host ? `${proto}://${host}` : undefined;
+}
+
 async function handleMcp(
   req: IncomingMessage,
   res: ServerResponse,
@@ -102,7 +121,14 @@ async function handleMcp(
   }
 
   const body = await readBody(req);
-  const server = createMcpServer(runtime.current, logger, principal.name, runtime.manager);
+  const server = createMcpServer(
+    runtime.current,
+    logger,
+    principal.name,
+    runtime.manager,
+    connectionManage(runtime),
+    requestBaseUrl(req),
+  );
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
@@ -135,11 +161,47 @@ async function reloadRuntime(runtime: Runtime): Promise<void> {
   await runtime.reload(next);
 }
 
+/**
+ * 构造注入给 MCP 工具的连接管理能力：写盘（connections.json）+ 热生效。
+ * 是否放行由 `enabled`（后台开关）决定，工具侧负责校验并给出可读错误。
+ */
+function connectionManage(runtime: Runtime): ConnectionManageCapability {
+  return {
+    enabled: runtime.current.server.allowAiConnectionWrites,
+    async upsert(name, rawConfig) {
+      const parsed = upsertConnection(runtime.current.dataDir, name, rawConfig);
+      await reloadRuntime(runtime);
+      return parsed;
+    },
+    async remove(name) {
+      const removed = deleteConnection(runtime.current.dataDir, name);
+      if (removed) await reloadRuntime(runtime);
+      return removed;
+    },
+  };
+}
+
 function publicConnections(runtime: Runtime): Array<Record<string, unknown>> {
-  const connections = runtime.current.connections;
+  const { connections, limits } = runtime.current;
   return Object.keys(connections)
     .sort()
-    .map((name) => safeConnectionInfo(name, connections[name]!) as unknown as Record<string, unknown>);
+    .map(
+      (name) =>
+        ({
+          ...safeConnectionInfo(name, connections[name]!, limits.maxRows),
+          static: runtime.current.staticConnectionNames.has(name),
+        }) as unknown as Record<string, unknown>,
+    );
+}
+
+/**
+ * 导出文件名只允许 ASCII 字母 / 数字 / `_ . -`，且必须是 .jsonl / .csv 的 basename。
+ * 这样即使 URL 里出现编码后的 `../`，也会在 decode 后被拒绝。
+ */
+function isSafeExportFileName(file: string): boolean {
+  if (file.length === 0 || file.length > 128) return false;
+  if (basename(file) !== file) return false;
+  return /^[A-Za-z0-9_.-]+\.(jsonl|csv)$/.test(file);
 }
 
 function handleLogsStream(req: IncomingMessage, res: ServerResponse, logger: Logger): void {
@@ -199,6 +261,9 @@ async function handleApi(
       version: VERSION,
       limits: config.limits,
       connections: publicConnections(runtime),
+      settings: {
+        allowAiConnectionWrites: config.server.allowAiConnectionWrites,
+      },
       tools: toolDefinitions.map((tool) => ({
         name: tool.name,
         title: tool.title,
@@ -216,6 +281,28 @@ async function handleApi(
   if (path === "/api/connections") {
     if (method !== "GET") throw new HttpError(405, "仅支持 GET；新增 / 修改请用 PUT /api/connections/<name>");
     sendJson(res, 200, { connections: publicConnections(runtime) });
+    return;
+  }
+
+  if (path === "/api/settings") {
+    if (method !== "GET" && method !== "PUT" && method !== "POST") throw new HttpError(405, "仅支持 GET / PUT");
+    if (method === "GET") {
+      sendJson(res, 200, {
+        settings: { allowAiConnectionWrites: runtime.current.server.allowAiConnectionWrites },
+      });
+      return;
+    }
+    requireAdmin(principal);
+    const body = await readBody(req);
+    const parsed = SettingsPatchSchema.safeParse(body);
+    if (!parsed.success || parsed.data.allowAiConnectionWrites === undefined) {
+      throw new HttpError(400, "设置校验失败：allowAiConnectionWrites 需为布尔值");
+    }
+    updateSettings(runtime.current.dataDir, parsed.data);
+    await reloadRuntime(runtime);
+    const enabled = runtime.current.server.allowAiConnectionWrites;
+    diag("info", `${principal.name} 更新设置：allowAiConnectionWrites=${enabled}`);
+    sendJson(res, 200, { ok: true, settings: { allowAiConnectionWrites: enabled } });
     return;
   }
 
@@ -245,7 +332,9 @@ async function handleApi(
     if (method === "GET") {
       const config = runtime.current.connections[name];
       if (!config) throw new HttpError(404, `连接 "${name}" 不存在`);
-      sendJson(res, 200, { connection: safeConnectionInfo(name, config) });
+      sendJson(res, 200, {
+        connection: safeConnectionInfo(name, config, runtime.current.limits.maxRows),
+      });
       return;
     }
 
@@ -253,13 +342,56 @@ async function handleApi(
 
     if (method === "PUT" || method === "POST") {
       const body = await readBody(req);
-      const parsed = upsertConnection(runtime.current.dataDir, name, body);
+      let newName = name;
+      if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+        const rawName = (body as Record<string, unknown>).name;
+        if (rawName !== undefined) {
+          if (typeof rawName !== "string") throw new HttpError(400, "name 必须是字符串");
+          newName = rawName.trim();
+        }
+      }
+
+      let renamed = false;
+      if (newName !== name) {
+        assertValidConnectionName(newName);
+        if (runtime.current.staticConnectionNames.has(name)) {
+          throw new HttpError(
+            400,
+            `连接 "${name}" 来自配置文件，Web 改名不会移除配置文件里的旧名；请直接修改配置文件后重启服务`,
+          );
+        }
+        if (Object.prototype.hasOwnProperty.call(runtime.current.connections, newName)) {
+          throw new HttpError(409, `连接名 "${newName}" 已存在`);
+        }
+        renamed = renameConnection(runtime.current.dataDir, name, newName);
+        if (!renamed) {
+          throw new HttpError(404, `连接 "${name}" 不存在于 ${CONNECTIONS_FILE}，无法重命名`);
+        }
+      }
+
+      let parsed;
+      try {
+        parsed = upsertConnection(runtime.current.dataDir, newName, body);
+      } catch (error) {
+        if (renamed) {
+          // 字段保存失败时把改名回滚，避免出现「旧名消失、新名配置不完整」。
+          renameConnection(runtime.current.dataDir, newName, name);
+        }
+        throw error;
+      }
+
       await reloadRuntime(runtime);
-      diag("info", `${principal.name} 保存了连接 "${name}" (${parsed.type})`);
+      diag(
+        "info",
+        renamed
+          ? `${principal.name} 将连接 "${name}" 重命名为 "${newName}" (${parsed.type})`
+          : `${principal.name} 保存了连接 "${newName}" (${parsed.type})`,
+      );
       sendJson(res, 200, {
         ok: true,
-        connection: safeConnectionInfo(name, parsed),
-        restarted: runtime.manager.names().includes(name),
+        connection: safeConnectionInfo(newName, parsed, runtime.current.limits.maxRows),
+        renamedFrom: renamed ? name : undefined,
+        restarted: runtime.manager.names().includes(newName),
       });
       return;
     }
@@ -274,6 +406,38 @@ async function handleApi(
     }
 
     throw new HttpError(405, "仅支持 GET / PUT / DELETE");
+  }
+
+  if (path.startsWith("/api/exports/")) {
+    if (method !== "GET" && method !== "HEAD") throw new HttpError(405, "仅支持 GET / HEAD");
+    let file: string;
+    try {
+      file = decodeURIComponent(path.slice("/api/exports/".length));
+    } catch {
+      throw new HttpError(400, "文件名编码不合法");
+    }
+    if (!isSafeExportFileName(file)) throw new HttpError(400, "文件名不合法");
+
+    const filePath = join(exportsDir(runtime.current.dataDir), file);
+    const info = await stat(filePath).catch(() => undefined);
+    if (!info || !info.isFile()) throw new HttpError(404, "导出文件不存在或已过期");
+
+    const contentType = file.endsWith(".csv")
+      ? "text/csv; charset=utf-8"
+      : "application/x-ndjson; charset=utf-8";
+    res.writeHead(200, {
+      "content-type": contentType,
+      "content-length": info.size,
+      "content-disposition": `attachment; filename="${file}"`,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    });
+    if (method === "HEAD") {
+      res.end();
+      return;
+    }
+    await pipeline(createReadStream(filePath), res);
+    return;
   }
 
   if (path === "/api/logs") {
