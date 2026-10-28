@@ -144,6 +144,22 @@ node dist/index.js serve -c infinmcp.config.json      # 不加 -c 则读 ./infin
 node dist/index.js mcp -c infinmcp.config.json
 ```
 
+### 用脚本启动（推荐日常使用）
+
+仓库根目录的 `startup.sh` 会把「编译检查 → 后台启动 → 写 pid → 等健康检查」一次做完，并支持 stop / status / restart：
+
+```bash
+./startup.sh            # 启动（等价于 start）
+./startup.sh status     # 看 pid、健康检查、MCP 端点
+./startup.sh restart
+./startup.sh stop
+```
+
+默认自动选用 `infinmcp.config.json`（没有则用 `local-test.config.json`），数据目录跟着配置走
+（`local-test.config.json` → `~/.config/infinmcp-local`，其余 → `~/.config/infinmcp`），
+可用 `INFINMCP_CONFIG` / `INFINMCP_DATA_DIR` / `INFINMCP_HOST` / `INFINMCP_PORT` 覆盖。
+生产环境建议用 systemd 常驻（见 [运行与部署](docs/deploy.md)）。
+
 几个容易踩的点：
 
 - **`-d, --data-dir` 决定 `connections.json` 存在哪**。Web 上新建/修改的连接写在这个目录里，
